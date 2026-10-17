@@ -1,0 +1,16 @@
+# Derniers communiqués de politique monétaire (à mettre à jour après chaque réunion).
+# Le texte est téléchargé une fois et sauvegardé dans data/communiques/<BANQUE>/<date>.txt.
+# debut / fin (facultatifs) : expressions régulières pour ne garder que le communiqué.
+# Si un site bloque le téléchargement, coller le texte à la main dans ce fichier .txt.
+FED:
+  - {date: "2026-09-16", url: "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm", fin: "^For media inquiries"}
+BCE:
+  - {date: "2026-09-10", url: "https://www.ecb.europa.eu/press/pr/date/2026/html/ecb.mp260910~314e508016.en.html"}
+BOE:
+  - {date: "2026-09-17", url: "https://www.bankofengland.co.uk/monetary-policy-summary-and-minutes/2026/september-2026", debut: "^At its meeting", fin: "^1: "}
+BOJ:
+  - {date: "2026-09-18", url: "https://www.boj.or.jp/en/mopo/mpmdeci/mpr_2026/k260918a.pdf", fin: "^Reference *$"}
+BNS:
+  - {date: "2026-09-24", url: "https://www.snb.ch/en/publications/communication/press-releases-restricted/pre_20260924"}
+RBA:
+  - {date: "2026-09-29", url: "https://www.rba.gov.au/media-releases/2026/mr-26-27.html"}   # le site renvoie 403 aux scripts : texte copié à la main

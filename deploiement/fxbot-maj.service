@@ -1,0 +1,30 @@
+# Recalcul des modèles (fair values, sentiment, état des signaux) ; lancé par fxbot-maj.timer
+[Unit]
+Description=Bot macro FX - mise a jour des modeles
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fxbot
+WorkingDirectory=/opt/fxbot
+ExecStart=/opt/fxbot/.venv/bin/python scripts/mettre_a_jour.py
+TimeoutStartSec=1800
+# Durcissement : le service ne peut écrire que dans ses dossiers de données
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# .cache : yfinance y garde ses cookies et fuseaux horaires (py-yfinance), sinon les cours échouent
+ReadWritePaths=/opt/fxbot/data /opt/fxbot/sorties /opt/fxbot/.cache
+# Garde-fou : la VM n'a que 908 Mo de RAM ; en cas d'emballement, c'est ce service qui est
+# limité puis tué, pas le reste de la VM (pic mesuré : ~690 Mo, poids du modèle mappés compris)
+MemoryHigh=750M
+MemoryMax=850M

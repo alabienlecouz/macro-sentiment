@@ -1,0 +1,16 @@
+# Fichiers propres à chaque machine : jamais envoyés ni supprimés par la synchronisation Mac -> VM
+.venv/
+.python/
+.cache/
+data/cache/
+sorties/
+.env
+/config.local.yaml
+__pycache__/
+.pytest_cache/
+.claude/
+.DS_Store
+# /opt/fxbot est aussi le dossier personnel de l'utilisateur fxbot
+/.profile
+/.bashrc
+/.bash_logout

@@ -1,0 +1,31 @@
+# Interface Streamlit, redémarrée automatiquement en cas d'arrêt
+[Unit]
+Description=Bot macro FX - tableau de bord
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=fxbot
+WorkingDirectory=/opt/fxbot
+ExecStart=/opt/fxbot/.venv/bin/streamlit run app/tableau_de_bord.py
+Restart=always
+RestartSec=10
+# Durcissement : le service ne peut écrire que dans ses dossiers de données
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Le tableau de bord ne fait que lire ses données ; il écrit seulement le cache de yfinance
+# (cours en direct) et les fichiers internes de Streamlit
+ReadWritePaths=/opt/fxbot/.cache /opt/fxbot/.streamlit
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

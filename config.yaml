@@ -1,0 +1,132 @@
+# Configuration du bot d'analyse macro FX
+# Convention de cotation : une paire XXXYYY = nombre d'unités de YYY pour 1 unité de XXX
+#   base      = XXX (devise cotée, ex. EUR dans EURUSD)
+#   cotation  = YYY (devise de cotation, ex. USD dans EURUSD)
+
+general:
+  date_debut: "1999-01-01"
+  dossier_cache: data/cache
+  dossier_sorties: sorties
+  duree_cache_jours: 1          # au-delà, on re-télécharge
+  anciennete_max_cache_jours: 30  # si une source échoue, on réutilise son cache jusqu'à cet âge ;
+                                  # au-delà, erreur visible (des données trop vieilles sont pires)
+
+# Indice des prix par devise
+#   source   : "fred" (id = identifiant de série FRED) ou "bri" (id = code pays BRI)
+#   decalage : délai de publication en mois (le CPI du mois m n'est utilisable qu'en m + decalage)
+cpi:
+  USD: {source: fred, id: CPIAUCSL, decalage: 1}            # CPI US, désaisonnalisé
+  EUR: {source: fred, id: CP0000EZ19M086NEST, decalage: 1}  # HICP zone euro
+  JPY: {source: bri, id: JP, decalage: 1}
+  GBP: {source: bri, id: GB, decalage: 1}
+  CHF: {source: bri, id: CH, decalage: 1}
+  # CPI australien trimestriel, répété sur les 3 mois du trimestre par la BRI :
+  # la valeur de janvier (= T1) n'est publiée que fin avril, donc utilisable en mai.
+  AUD: {source: bri, id: AU, decalage: 4}
+
+# Taux directeurs (BRI, jeu WS_CBPOL), en % annuel
+#   id        : code pays BRI (XM = zone euro)
+#   si_absent : valeur pour les mois sans taux cible (régimes d'assouplissement quantitatif)
+taux_directeurs:
+  USD: {id: US}
+  EUR: {id: XM}
+  JPY: {id: JP, si_absent: 0.0}
+  GBP: {id: GB}
+  CHF: {id: CH}
+  AUD: {id: AU}
+
+# Zones OCDE pour les fondamentaux du BEER (balance courante, termes de l'échange)
+fondamentaux:
+  USD: {zone_ocde: USA}
+  EUR: {zone_ocde: EA, complement_bce: true}   # balance courante OCDE seulement depuis 2013
+  JPY: {zone_ocde: JPN}
+  GBP: {zone_ocde: GBR}
+  CHF: {zone_ocde: CHE}
+  AUD: {zone_ocde: AUS}
+
+paires:
+  EURUSD: {ticker: "EURUSD=X", base: EUR, cotation: USD}
+  USDJPY: {ticker: "JPY=X",    base: USD, cotation: JPY}
+  GBPUSD: {ticker: "GBPUSD=X", base: GBP, cotation: USD}
+  USDCHF: {ticker: "CHF=X",    base: USD, cotation: CHF}
+  AUDUSD: {ticker: "AUDUSD=X", base: AUD, cotation: USD}
+
+# Passage du journalier au mensuel
+alignement:
+  methode_mensuelle: moyenne    # "moyenne" (cohérent avec le CPI, moyenne de prix) ou "fin"
+  anciennete_max_mois: 3        # on réutilise le dernier CPI connu pendant au plus 3 mois
+
+ppa:
+  methode: moyenne              # "moyenne" (calibrage long terme) ou "date" (date de base fixe)
+  periode_calibration: [null, null]   # [début, fin] ; null = tout l'échantillon
+  date_base: "2004-01-01"       # utilisé seulement si methode = "date"
+
+parite_taux:
+  horizon_mois: 12              # horizon du forward ; le taux directeur sert d'approximation du taux à 1 an
+
+beer:
+  variables: [diff_taux_reel, diff_termes_echange, diff_balance_courante]
+  periode_estimation: [null, null]   # null = tout l'échantillon
+  decalage_trimestriel_mois: 3       # données trimestrielles publiées ~3 mois après la fin du trimestre
+
+ecarts:
+  fenetre_zscore_mois: 60       # z-score glissant : fenêtre de 5 ans
+  min_periodes_zscore: 36
+
+sentiment:
+  dossier_communiques: data/communiques
+  phrases_etiquetees: data/sentiment/phrases_etiquetees.csv
+  modele_zero_shot: MoritzLaurer/deberta-v3-base-zeroshot-v2.0
+  modele_finbert: ProsusAI/finbert
+  dossier_onnx: modeles/deberta_zeroshot_onnx   # créé par scripts/exporter_onnx.py
+  moteur_zero_shot: torch          # "torch" (Mac) ou "onnx" (VM, plus léger)
+  modeles_actifs: [zero_shot, finbert]   # sur la VM : [zero_shot] seulement
+  taille_lot: 16
+  # Une hypothèse NLI par étiquette (en anglais, comme les communiqués).
+  # Formulations testées sur les 45 phrases annotées (F1 macro, modèle base) :
+  #   "This statement signals tighter monetary policy..." : 0,63
+  #   "Interest rates are likely to go up / down."         : 0,68
+  #   "This is hawkish / dovish / neutral." (retenue)      : 0,82   (large : 0,84 mais ~5x plus lent)
+  hypotheses:
+    hawkish: "This is hawkish."
+    dovish: "This is dovish."
+    neutre: "This is neutral."
+  # Banque centrale -> devise
+  banques: {FED: USD, BCE: EUR, BOE: GBP, BOJ: JPY, BNS: CHF, RBA: AUD}
+
+signal:
+  poids_modeles: {ppa: 0.5, beer: 0.5}   # modèles de valorisation et leur poids (l'UIP est exclue : momentum)
+  seuil_z: 1.0                           # |z_valorisation| minimal pour un signal
+  seuil_sentiment: 0.15                  # écart de sentiment minimal pour confirmer / contredire
+  p_max_cointegration: 0.10              # au-delà (p-value d'Engle-Granger), le z du BEER n'entre pas
+                                         # dans le signal ; il reste affiché à titre indicatif
+  modele_sentiment: zero_shot            # "zero_shot" ou "finbert"
+
+tableau_de_bord:
+  rafraichissement_secondes: 300         # spot rafraîchi toutes les 5 minutes
+
+# Couche « régimes macro » : outil DESCRIPTIF, sans effet sur le signal de valorisation.
+# Seuils fixés a priori, avant d'avoir regardé les résultats : ne pas les ajuster après coup.
+regime:
+  # Croissance : confiance des entreprises de l'OCDE (BCI, 100 = moyenne de long terme).
+  # Le CLI n'existe ni pour la zone euro ni pour la Suisse : BCI pour les six devises.
+  # decalage = délai de publication en mois, constaté le 2026-10-17 (dernier mois disponible :
+  # 2026-09 pour USA, EA20, JPN, GBR ; 2026-08 pour CHE et AUS).
+  confiance:
+    USD: {zone: USA, decalage: 1}
+    EUR: {zone: EA20, decalage: 1}
+    JPY: {zone: JPN, decalage: 1}
+    GBP: {zone: GBR, decalage: 1}
+    CHF: {zone: CHE, decalage: 2}
+    AUD: {zone: AUS, decalage: 2}
+  horizon_croissance_mois: 3     # dynamique de croissance : variation du BCI sur 3 mois
+  horizon_inflation_mois: 6      # dynamique d'inflation : variation de l'inflation sur 12 mois, sur 6 mois
+  cible_inflation: 2.0           # cible d'inflation (%), identique pour toutes les devises
+  horizon_taux_mois: 6           # cycle monétaire : variation du taux directeur sur 6 mois
+  seuil_taux_pb: 25              # au-delà de ±25 pb : resserrement / assouplissement, sinon pause
+  mois_confirmation: 2           # un nouveau régime n'est retenu qu'après 2 mois consécutifs
+  # Zone neutre fixée a priori sur un critère de bruit (pas réglée sur les épisodes) : une
+  # dynamique est « nulle » si |dynamique| < 0,25 × son écart-type historique, calculé en
+  # fenêtre croissante (seulement le passé). Un mois neutre garde le régime précédent.
+  zone_neutre_ecarts_types: 0.25
+  zone_neutre_min_obs: 24        # historique minimal (mois) pour estimer cet écart-type

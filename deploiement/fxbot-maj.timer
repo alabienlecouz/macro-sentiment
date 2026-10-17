@@ -1,0 +1,10 @@
+# Tous les jours à 7h et 19h (heure de Paris) ; rattrape un passage manqué si la VM était éteinte
+[Unit]
+Description=Bot macro FX - mise a jour planifiee
+
+[Timer]
+OnCalendar=*-*-* 07,19:00:00 Europe/Paris
+Persistent=true
+
+[Install]
+WantedBy=timers.target

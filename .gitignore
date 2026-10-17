@@ -1,0 +1,9 @@
+.venv/
+.env
+__pycache__/
+.pytest_cache/
+data/cache/
+sorties/
+.claude/
+modeles/
+config.local.yaml

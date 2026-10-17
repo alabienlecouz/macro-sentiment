@@ -1,0 +1,8 @@
+[server]
+headless = true
+port = 8501
+# Sur la VM : n'écouter qu'en local et passer par un tunnel SSH (voir deploiement/README.md)
+address = "127.0.0.1"
+
+[browser]
+gatherUsageStats = false
