@@ -603,7 +603,7 @@ endpoint is used.
   classifiers with natural language inference. arXiv:2312.17543.
 - Araci, D. (2019). FinBERT: Financial sentiment analysis with pre-trained language models.
   arXiv:1908.10063.
-- FrenchQuant, idea from is ytb channel: https://www.youtube.com/watch?v=fvqKANpRF4E
+- FrenchQuant, idea from his ytb channel: https://www.youtube.com/watch?v=fvqKANpRF4E
 
 ---
 
