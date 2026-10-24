@@ -1,0 +1,4 @@
+# Réglages propres à la VM (copier en /opt/fxbot/config.local.yaml) : surchargent config.yaml
+sentiment:
+  moteur_zero_shot: onnx        # ONNX Runtime au lieu de torch
+  modeles_actifs: [zero_shot]   # FinBERT nécessite torch : seulement sur le Mac

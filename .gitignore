@@ -1,9 +1,17 @@
-.venv/
+# Secrets et réglages propres à une machine
 .env
+/config.local.yaml
+
+# Environnement et caches Python
+.venv/
 __pycache__/
 .pytest_cache/
+
+# Données téléchargées, résultats et modèle exporté (régénérables)
 data/cache/
 sorties/
-.claude/
 modeles/
-config.local.yaml
+
+# Fichiers système et d'outils
+.DS_Store
+.claude/
