@@ -30,7 +30,7 @@ G10 data: fair values, central bank sentiment and machine learning.**
 1. [Pipeline](#1-pipeline)
 2. [Data](#2-data)
 3. [Fair-value models](#3-fair-value-models)
-4. [Signal generation](#4-signal-generation)
+4. [Signal and the tool in action](#4-signal-and-the-tool-in-action)
 5. [Backtest and evaluation](#5-backtest-and-evaluation)
 6. [Central bank sentiment](#6-central-bank-sentiment)
 7. [Limitations and next steps](#7-limitations-and-next-steps)
@@ -89,44 +89,84 @@ not survive the robustness checks, so it is displayed only.
 
 ---
 
-## 4. Signal generation
+## 4. Signal and the tool in action
 
 The gap to each fair value is $e_t = \ln(S_t / FV_t)$, standardised by its historical volatility:
 $z_t = e_t / \sigma$. The signal averages PPP and BEER (BEER only if cointegrated) and acts beyond
 one standard deviation: $z \le -1$, the pair should rise; $z \ge +1$, it should fall. Central bank
 tone then grades the signal as strong, moderate or weak. Parameters were fixed before the evaluation.
 
+The bot ran twice a day on a 1 GB cloud VM and served these readings on a Streamlit dashboard
+(switched off once the study concluded):
+
+![USDJPY spot vs PPP and BEER fair values, with anchored z-scores](docs/images/fair_values_usdjpy.png)
+
+*USDJPY since 2004: monthly spot against the PPP and BEER fair values (top) and the gap in standard
+deviations, with the ±1σ signal thresholds (bottom).*
+
+| 25 Oct 2026 | Spot | Gap to PPP | $z^{PPP}$ | $z^{BEER}$ | Signal |
+|---|---|---|---|---|---|
+| EURUSD | 1.122 | −12.9 % | −0.88 | +0.96 (not cointegrated) | neutral |
+| USDJPY | 158.02 | +87.2 % | **+2.34** | +1.63 (not cointegrated) | **USDJPY ↓, weak** |
+| GBPUSD | 1.328 | −14.0 % | −1.13 | +1.29 (cointegrated, p = 0.06) | neutral |
+| USDCHF | 0.829 | −1.8 % | −0.10 | −0.40 (not cointegrated) | neutral |
+| AUDUSD | 0.698 | −5.0 % | −0.32 | −1.11 (not cointegrated) | neutral |
+
+The yen is far below PPP, but the Fed sounds more hawkish than the BoJ, so the signal is graded
+weak. It is also the model's best-known failure: the yen has screened as cheap since 2013 and kept
+falling. The rest of this README asks whether readings like these were ever worth trading.
+
 ---
 
 ## 5. Backtest and evaluation
 
 Every test re-estimates the models at each date on past data only. A fair value "prices" well if
-the rate **comes back to it**, not if it tracks the rate closely.
+the rate **comes back to it**, not if it tracks the rate closely. The investigation runs in five
+steps, each prompted by the previous result.
 
-### 5.1 Look-ahead
+### 5.1 Look-ahead: the first backtest was too good
+
+The first backtest calibrated the fair values on the whole sample, which tells the model in advance
+where the long-run mean lies. Re-estimating at each date on past data only:
 
 | 5 pairs, 2009–2026, 12 months | Hit rate | Mean return | Independent obs. |
 |---|---|---|---|
 | Full-sample calibration (look-ahead) | 68 % | +4.6 % | 22 |
 | Real time | 54 % | +0.9 % | 38 |
 
-Knowing the long-run mean in advance creates most of the apparent edge.
+Most of the apparent edge was look-ahead. But 38 independent observations cannot tell 54 % from
+luck, and PPP gaps take years to close: the test needs a much longer history.
 
 ### 5.2 Do gaps predict returns? (9 G10 pairs, 1976–2026)
 
-Regression of the future return on today's gap, $r_{t\to t+h} = \alpha + \beta\,e_t$, pooled across
-pairs with Driscoll-Kraay errors, against a naive "fair value" (5-year moving average):
+Exchange rates since 1971 (the start of floating), with the euro before 1999 rebuilt from the
+Deutsche mark, give 50 years of data. For each fair value, the real-time gap is regressed on the
+return over the next $h$ months:
 
-| Pooled $t$ of $\beta$ | 12 months | 24 months | Half-life |
+$$r_{t\to t+h} = \alpha + \beta\,e_t + \varepsilon_t, \qquad r_{t\to t+h} = \ln S_{t+h} - \ln S_t$$
+
+$\beta = -1$ means the gap fully closes within $h$ months; $\beta = 0$ means the gap says nothing
+about the future. Pairs are pooled with **Driscoll-Kraay** standard errors, which allow for
+overlapping returns and for shocks common to every pair (all are quoted against the dollar). The
+benchmark is a naive "fair value" equal to the 5-year moving average of the rate: a model that
+does not beat it adds nothing to plain mean reversion of the price.
+
+| Pooled $t$ of $\beta$ | 12 months | 24 months | Half-life of the gap |
 |---|---|---|---|
 | PPP | −1.76 | **−2.09** | 55 months |
 | Productivity-adjusted PPP | −1.80 | −2.11 | 48 months |
 | 5-year moving average | −0.51 | −1.11 | 46 months |
 
-PPP has a real but slow pull ($\beta \approx -0.17$ at 24 months). A fixed-effects variant, added
-after the first results, gives the same picture.
+**PPP has a real but slow pull.** At 24 months $\beta \approx -0.17$: about a fifth of the gap closes
+in two years, and half of it in about four and a half years, in line with the PPP literature
+(Rogoff, 1996). PPP clearly beats the naive anchor. The productivity adjustment looked better on the
+first five pairs, but the advantage disappeared on the G10, before 2000 and in a fixed-effects
+variant (added after seeing the first results, and reported as such).
 
 ### 5.3 Does the trading rule work?
+
+A statistical pull is not a profitable rule. Applying the bot's rule ($\lvert z\rvert \ge 1$) to the
+same real-time gaps:
 
 | Rule $\lvert z\rvert \ge 1$, 9 pairs | 12 months | 24 months |
 |---|---|---|
@@ -135,11 +175,13 @@ after the first results, gives the same picture.
 | 5-year moving average | 46 %, p = 0.30 | 49 %, p = 0.86 |
 
 No. A 62 % hit rate on the first 5 pairs ($p = 0.07$) vanished once the other G10 pairs were added.
-All tests run are reported, so a $p = 0.07$ among many comparisons is weak evidence.
+All tests run are reported, so a $p = 0.07$ among many comparisons is weak evidence. Adding pairs
+does not add independent time: a dollar move hits every pair at once.
 
-### 5.4 Machine learning (Random Forest, XGBoost)
+### 5.4 Would a more flexible model do better?
 
-Six real-time variables (PPP gaps, carry, momentum, volatility), purged walk-forward 1991–2025,
+Perhaps a single linear rule is too crude. Random Forest and XGBoost get six real-time variables
+(PPP gaps, carry, momentum, volatility), in a purged walk-forward from 1991 to 2025 with
 hyperparameters fixed in advance:
 
 | 12 months | In training | Out of sample | p |
@@ -150,9 +192,11 @@ hyperparameters fixed in advance:
 
 Nothing beats a coin flip; the more flexible the model, the more it overfits.
 
-### 5.5 Carry: a risk premium, not a forecast
+### 5.5 If direction cannot be predicted, can risk be paid?
 
-Each month, buy the 3 G10 currencies with the best value + carry score and sell the 3 worst,
+Four tests say the direction of the rate cannot be forecast. The last one changes the question:
+instead of predicting moves, collect a premium for holding currency risk. Each month, buy the 3 G10
+currencies with the best value + carry score (cheap and high-yielding) and sell the 3 worst,
 earning interest plus FX moves, net of average costs.
 
 ![G10 value, carry and combined portfolios, cumulative net return, 1986–2026](docs/images/portefeuille_value_carry.png)
@@ -168,7 +212,7 @@ The premium paid for crash risk (−15 % in 2008) and faded as rate gaps between
 
 ## 6. Central bank sentiment
 
-Each sentence of the statements is classified hawkish / dovish / neutral by a zero-shot NLI model
+Could central bank communication add what macro data lack? Each sentence of the statements is classified hawkish / dovish / neutral by a zero-shot NLI model
 (`MoritzLaurer/deberta-v3-base-zeroshot-v2.0`). On 45 hand-labelled sentences it scores **82 %**,
 against **62 %** for FinBERT, which measures tone rather than policy stance.
 
