@@ -146,7 +146,7 @@ values themselves is in the [README](../README.md#5-backtest-and-evaluation).
   themselves correlated (4 of the 5 contain the US dollar), so the effective number of
   independent observations is smaller still.
 - **USDJPY is the main failure.** Since 2013 the yen has looked cheap on PPP almost continuously
-  and kept getting cheaper; real-time hit rate 32 % (see the value trap in the [README limitations](../README.md#8-limitations-and-next-steps)).
+  and kept getting cheaper; real-time hit rate 32 % (see the value trap in the [README limitations](../README.md#7-limitations-and-next-steps)).
 
 Neither transaction costs nor carry are included: this is a test of predictive content, not a
 measure of profitability.

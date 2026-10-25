@@ -208,6 +208,33 @@ apprentissage:
   graine: 0
   permutations: 5                 # importance des variables par permutation, hors échantillon
 
+# Portefeuille G10 value + carry (scripts/backtest_portefeuille.py). Protocole validé le 25/10/2026
+# AVANT tout résultat. Rendement total mensuel d'une devise k contre USD :
+#   rx(t+1) = (i_k(t) - i_USD(t)) / 12 + ln S_k(t+1) - ln S_k(t)   (S_k en USD par unité de k)
+# Chaque fin de mois : classement des devises, achat des 3 premières, vente des 3 dernières, poids
+# égaux. Critères : (1) carry > 0 après coûts, t de Newey-West > 2 sur 1986-2026 ; (2) value > 0 ;
+# (3) Sharpe de la combinaison > Sharpe de chaque stratégie ; (4) carry : asymétrie négative et
+# pertes plus fortes les mois de baisse des actions. Résultats publiés quels qu'ils soient.
+portefeuille:
+  devises: {EUR: DE, JPY: JP, GBP: GB, CHF: CH, AUD: AU, CAD: CA, NZD: NZ, NOK: "NO", SEK: SE}
+  # cours de fin de mois BRI (WS_XRU, collection E), en devise par USD ; DE.EUR = euro synthétique avant 1999
+  debut_principal: "1986-01-01"   # les 9 devises ont un taux directeur
+  debut_verification: "1977-01-01"
+  min_devises: 7
+  nb_achat_vente: 3
+  # Coûts : le protocole prévoyait 5 pb par rotation. Décidé APRÈS les premiers résultats, dans le
+  # sens prudent : frais moyens de 10 pb par rotation + 1 pb par mois de renouvellement des contrats
+  # à terme sur tout le nominal (avec 5 pb sans renouvellement : combinaison 4,1 %/an, Sharpe 0,54).
+  cout_pb_par_rotation: 10
+  cout_roll_pb_mois: 1
+  decennies: {"1986-1995": ["1986-01-01", "1995-12-01"], "1996-2005": ["1996-01-01", "2005-12-01"],
+              "2006-2015": ["2006-01-01", "2015-12-01"], "2016-2026": ["2016-01-01", "2026-12-01"]}
+  signaux: [carry, value, combinaison]
+  indice_actions: "^GSPC"         # S&P 500 ; mois de baisse = rendement mensuel < 0
+  sous_periodes: {"1986-2007": ["1986-01-01", "2007-12-01"], "2008-2026": ["2008-01-01", "2026-12-01"]}
+  crises: {"SME 1992": ["1992-08-01", "1992-10-01"], "LTCM / yen 1998": ["1998-08-01", "1998-10-01"],
+           "2008": ["2008-08-01", "2008-12-01"], "Covid 2020": ["2020-02-01", "2020-03-01"]}
+
 # Historique long (depuis 1971, fin de Bretton Woods) : utilisé UNIQUEMENT par le banc d'essai,
 # avec un cache séparé ; le bot en production n'est pas modifié.
 historique_long:
