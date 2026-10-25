@@ -42,3 +42,13 @@ def test_zscore_ancre_periode():
 
 def test_ecart_log_symetrique():
     assert ecart_log(pd.Series([2.0]), pd.Series([1.0])).iloc[0] == pytest.approx(-ecart_log(pd.Series([0.5]), pd.Series([1.0])).iloc[0])
+
+
+def test_z_ancre_utilise_le_sigma_de_l_historique_long():
+    from fxmacro.pipeline import ajouter_ecarts
+    index = pd.date_range("2020-01-01", periods=4, freq="MS")
+    tableau = pd.DataFrame({"spot": [1.0, 1.1, 1.2, 1.3], "fv_ppa": [1.0] * 4, "sigma_ppa": [0.2] * 4}, index=index)
+    config = {"ecarts": {"fenetre_zscore_mois": 3, "min_periodes_zscore": 2},
+              "ppa": {"periode_calibration": [None, None]}, "beer": {"periode_estimation": [None, None]}}
+    resultat = ajouter_ecarts(tableau, config)
+    assert resultat["z_ppa_ancre"].iloc[-1] == pytest.approx(np.log(1.3) / 0.2)   # σ long, pas celui du tableau

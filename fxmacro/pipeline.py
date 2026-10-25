@@ -15,9 +15,10 @@ from fxmacro.fair_value.parite_taux import (
     fair_value_uip, forward_theorique, pourcent_vers_decimal, prime_terme_annualisee,
 )
 from fxmacro.fair_value.ppa import fair_value_ppa
+from fxmacro.fair_value.ppa_productivite import estimer_ppa_productivite
 
 # Modèles dont on calcule écart et z-scores (suffixe de colonne -> colonne de fair value)
-MODELES = {"ppa": "fv_ppa", "uip": "fv_uip", "beer": "fv_beer"}
+MODELES = {"ppa": "fv_ppa", "uip": "fv_uip", "beer": "fv_beer", "ppa_productivite": "fv_ppa_productivite"}
 
 
 def periode_reference(modele: str, config: dict) -> tuple[str | None, str | None]:
@@ -61,13 +62,36 @@ def charger_donnees_paire(paire: str, config: dict) -> pd.DataFrame:
     )
 
 
-def ajouter_ppa(tableau: pd.DataFrame, config: dict) -> pd.DataFrame:
+def ajouter_ppa(tableau: pd.DataFrame, config: dict, paire: str | None = None) -> pd.DataFrame:
+    """Fair value PPA. Avec ppa.historique_long, elle est calibrée sur l'historique long (1971) :
+    c'est la version validée par le banc d'essai (repère de valorisation à 2 ans). La PPA ajustée
+    de la productivité est alors calculée aussi, pour affichage. Les écarts-types du z ancré
+    (colonnes sigma_*) viennent du même historique long."""
     params = config["ppa"]
+    if params.get("historique_long") and paire is not None:
+        return ajouter_ppa_longue(tableau, config, paire)
     tableau["fv_ppa"] = fair_value_ppa(
         tableau["spot"], tableau["cpi_base"], tableau["cpi_cotation"],
         methode=params["methode"], periode=tuple(params["periode_calibration"]),
         date_base=params["date_base"],
     )
+    return tableau
+
+
+def ajouter_ppa_longue(tableau: pd.DataFrame, config: dict, paire: str) -> pd.DataFrame:
+    """PPA longue et PPA ajustée de la productivité, estimées sur 1971-aujourd'hui."""
+    from fxmacro.donnees.historique_long import tableau_long  # import local : évite un cycle
+
+    long = tableau_long(paire, config)
+    params = config["ppa"]
+    fair_values = {
+        "ppa": fair_value_ppa(long["spot"], long["cpi_base"], long["cpi_cotation"], methode=params["methode"],
+                              periode=tuple(params["periode_calibration"]), date_base=params["date_base"]),
+        "ppa_productivite": estimer_ppa_productivite(long)[0],
+    }
+    for nom, fv in fair_values.items():
+        tableau[f"fv_{nom}"] = fv.reindex(tableau.index)
+        tableau[f"sigma_{nom}"] = float(ecart_log(long["spot"], fv).std())
     return tableau
 
 
@@ -91,22 +115,34 @@ def ajouter_beer(tableau: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, Res
     return tableau, resultat
 
 
+def modeles_presents(tableau: pd.DataFrame) -> dict[str, str]:
+    """Modèles dont la fair value figure dans le tableau (la PPA productivité est facultative)."""
+    return {suffixe: colonne for suffixe, colonne in MODELES.items() if colonne in tableau}
+
+
 def ajouter_ecarts(tableau: pd.DataFrame, config: dict) -> pd.DataFrame:
-    """Pour chaque modèle : écart en %, z-score glissant et z-score ancré."""
+    """Pour chaque modèle : écart en %, z-score glissant et z-score ancré.
+
+    Si le tableau contient l'écart-type du modèle (colonne sigma_*, calculée sur l'historique
+    long), le z ancré l'utilise ; sinon il est mesuré sur la période de référence du tableau.
+    """
     params = config["ecarts"]
-    for suffixe, colonne_fv in MODELES.items():
+    for suffixe, colonne_fv in modeles_presents(tableau).items():
         tableau[f"ecart_{suffixe}"] = ecart_pct(tableau["spot"], tableau[colonne_fv])
         tableau[f"z_{suffixe}_glissant"] = zscore_glissant(
             tableau[f"ecart_{suffixe}"], params["fenetre_zscore_mois"], params["min_periodes_zscore"])
-        tableau[f"z_{suffixe}_ancre"] = zscore_ancre(ecart_log(tableau["spot"], tableau[colonne_fv]),
-                                                    periode_reference(suffixe, config))
+        ecart = ecart_log(tableau["spot"], tableau[colonne_fv])
+        if f"sigma_{suffixe}" in tableau:
+            tableau[f"z_{suffixe}_ancre"] = ecart / tableau[f"sigma_{suffixe}"]
+        else:
+            tableau[f"z_{suffixe}_ancre"] = zscore_ancre(ecart, periode_reference(suffixe, config))
     return tableau
 
 
 def construire_tableau(paire: str, config: dict) -> tuple[pd.DataFrame, ResultatBEER]:
     """Tableau mensuel complet d'une paire (tous modèles) et résultat de l'estimation BEER."""
     tableau = charger_donnees_paire(paire, config)
-    tableau = ajouter_ppa(tableau, config)
+    tableau = ajouter_ppa(tableau, config, paire)
     tableau = ajouter_parite_taux(tableau, config)
     tableau, resultat_beer = ajouter_beer(tableau, config)
     return ajouter_ecarts(tableau, config), resultat_beer
@@ -117,7 +153,7 @@ def resumer_derniere_ligne(paire: str, tableau: pd.DataFrame, config: dict) -> d
     infos = config["paires"][paire]
     derniere = tableau.iloc[-1]
     ligne = {"paire": paire, "mois": tableau.index[-1].strftime("%Y-%m"), "spot": derniere["spot"]}
-    for suffixe, colonne_fv in MODELES.items():
+    for suffixe, colonne_fv in modeles_presents(tableau).items():
         ligne[colonne_fv] = derniere[colonne_fv]
         ligne[f"ecart_{suffixe}_%"] = 100 * derniere[f"ecart_{suffixe}"]
         ligne[f"z_{suffixe}_gliss"] = derniere[f"z_{suffixe}_glissant"]

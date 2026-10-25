@@ -60,6 +60,9 @@ ppa:
   methode: moyenne              # "moyenne" (calibrage long terme) ou "date" (date de base fixe)
   periode_calibration: [null, null]   # [début, fin] ; null = tout l'échantillon
   date_base: "2004-01-01"       # utilisé seulement si methode = "date"
+  # Calibrage sur l'historique long (1971-aujourd'hui), version validée par le banc d'essai :
+  # repère de valorisation à environ 2 ans. Ajoute la PPA ajustée de la productivité (affichage).
+  historique_long: true
 
 parite_taux:
   horizon_mois: 12              # horizon du forward ; le taux directeur sert d'approximation du taux à 1 an
@@ -101,6 +104,7 @@ signal:
   p_max_cointegration: 0.10              # au-delà (p-value d'Engle-Granger), le z du BEER n'entre pas
                                          # dans le signal ; il reste affiché à titre indicatif
   modele_sentiment: zero_shot            # "zero_shot" ou "finbert"
+  modeles_affichage: [ppa_productivite]  # affichés (écart, z) mais hors du z de valorisation
 
 tableau_de_bord:
   rafraichissement_secondes: 300         # spot rafraîchi toutes les 5 minutes
@@ -130,3 +134,116 @@ regime:
   # fenêtre croissante (seulement le passé). Un mois neutre garde le régime précédent.
   zone_neutre_ecarts_types: 0.25
   zone_neutre_min_obs: 24        # historique minimal (mois) pour estimer cet écart-type
+
+# Banc d'essai des fair values — critères fixés AVANT de regarder les résultats (2026-10-25)
+#   Une fair value « price » bien si le cours revient vers elle (pas si elle colle au cours).
+#   Critère principal : β en panel de r(t→t+12 mois) sur l'écart e(t) = ln(S / FV), t de
+#     Driscoll-Kraay. Une version est retenue si son t est plus négatif que celui de la
+#     référence naïve ET de la version actuelle, avec β < 0 sur la majorité des paires.
+#   Critère secondaire : demi-vie médiane de l'écart (plus courte = meilleure).
+#   Ajout du 2026-10-25, décidé APRÈS avoir vu les premiers résultats : une version 2 du panel
+#     (effets fixes par paire + écarts standardisés en temps réel), car USDJPY dominait la pente
+#     commune de la version 1. Les deux versions sont affichées ; la version 1 reste le critère
+#     fixé à l'avance.
+banc_essai:
+  debut: "2009-01-01"            # même période d'évaluation que le backtest
+  horizons_mois: [6, 12, 24]
+  horizon_principal_mois: 12
+  fenetre_reference_mois: 60     # référence naïve : moyenne mobile du cours sur 5 ans
+
+# Backtest du sentiment des banques centrales (scripts/backtest_sentiment.py).
+# Protocole fixé le 25/10/2026 AVANT d'avoir vu les scores historiques :
+#   score mensuel d'une banque = score de son dernier communiqué publié avant la fin du mois ;
+#   écart Δs = score(banque de la devise de base) - score(Fed) ;
+#   1) validation : le score précède-t-il les variations du taux directeur (corrélation de rang
+#      entre le score en t et la variation du taux de t à t+6 mois, attendue positive) ;
+#   2) signal sentiment seul, règle du bot : hausse de la paire si Δs ≥ seuil, baisse si Δs ≤ -seuil ;
+#      variante : Δs moins sa moyenne passée (le style de rédaction diffère d'une banque à l'autre) ;
+#   3) surcouche : signaux de valorisation (z PPA en temps réel, |z| ≥ 1) classés confirmés /
+#      contredits / modérés par le sentiment, réussite à 12 mois par groupe (descriptif : peu d'obs.).
+# Rendements : cours de fin de mois, ln S(t+h) - ln S(t), sans portage ni coûts.
+backtest_sentiment:
+  dossier_communiques: data/cache/communiques_historiques
+  annees: [2015, 2026]           # la BoE publie ses « Monetary Policy Summaries » depuis août 2015
+  debut: "2015-09-01"            # premier mois où les trois banques ont un communiqué
+  paires: {EURUSD: BCE, GBPUSD: BOE}   # banque de la devise de base ; la devise de cotation est l'USD (Fed)
+  banque_cotation: FED
+  modeles: [zero_shot, finbert]
+  horizons_mois: [1, 3]          # signal sentiment seul
+  horizon_principal_mois: 3
+  horizon_surcouche_mois: 12     # même horizon que le backtest de valorisation
+  horizon_taux_mois: 6           # validation : variation du taux directeur
+  anciennete_max_mois: 4         # un communiqué plus vieux n'est plus utilisé
+  min_obs_moyenne: 12            # variante centrée : nombre minimal de mois passés
+  # Étude d'événement (scripts/etude_evenement_sentiment.py), fixée le 25/10/2026 avant les résultats :
+  # réaction = variation du change de la clôture de la veille à celle du lendemain du communiqué,
+  # signée pour que + = appréciation de la devise de la banque ; ton = score - score du communiqué
+  # précédent de la même banque ; placebo : même fenêtre décalée d'une semaine avant le communiqué.
+  jours_avant: 1
+  jours_apres: 1
+  decalage_placebo_jours: 5      # jours ouvrés
+
+# Random Forest et XGBoost contre régression logistique (scripts/backtest_ml.py).
+# Protocole validé le 25/10/2026 AVANT tout résultat ; aucun hyperparamètre ne sera réglé ensuite.
+#   cible : signe de ln S(t+h) - ln S(t), 9 paires du G10, mensuel, historique long ;
+#   validation walk-forward : entraînement initial 1976-1990, réentraînement chaque année, prédiction
+#   de l'année suivante ; purge : un mois t n'entre dans l'entraînement que si t + h < début du test ;
+#   découpage par date (toutes les paires d'une même date du même côté) ; standardisation sur
+#   l'entraînement seul ;
+#   critère : le modèle non linéaire est utile seulement si (1) réussite hors échantillon > 50 %
+#   avec p < 0,05 sur l'échantillon conservateur (moyenne des paires par date, un mois sur h) ET
+#   (2) log-loss meilleure que la logistique, test de Diebold-Mariano p < 0,05.
+apprentissage:
+  debut: "1976-01-01"
+  premiere_annee_test: 1991
+  derniere_annee_test: 2025
+  horizons_mois: [12, 3]          # 12 = principal
+  variables: [z_ppa, z_ppa_productivite, carry, momentum_3m, momentum_12m, volatilite_12m]
+  taux_avant_euro: DE             # taux directeur allemand pour l'euro avant 1999
+  sous_periodes: {"1991-2008": ["1991-01-01", "2008-12-01"], "2009-2025": ["2009-01-01", "2025-12-01"]}
+  modeles:
+    logistique: {C: 1.0}
+    foret_aleatoire: {n_estimators: 500, max_depth: 3, min_samples_leaf: 50, max_features: sqrt}
+    xgboost: {n_estimators: 300, max_depth: 2, learning_rate: 0.05, subsample: 0.8}
+  graine: 0
+  permutations: 5                 # importance des variables par permutation, hors échantillon
+
+# Historique long (depuis 1971, fin de Bretton Woods) : utilisé UNIQUEMENT par le banc d'essai,
+# avec un cache séparé ; le bot en production n'est pas modifié.
+historique_long:
+  date_debut: "1960-01-01"         # téléchargement (le CPI doit précéder les cours de 12 mois)
+  dossier_cache: data/cache/long
+  debut_evaluation: "1976-01-01"   # 5 ans d'historique avant la première évaluation (fenêtre croissante)
+  # Cours mensuels FRED (moyennes mensuelles). inverse: true si la série cote la base en cotation
+  # dans l'autre sens. EUR avant 1999 : « euro synthétique » = mark allemand / 1,95583.
+  cours:
+    EURUSD: {fred: EXUSEU, avant_euro: {fred: EXGEUS, dem_par_eur: 1.95583}}
+    USDJPY: {fred: EXJPUS}
+    GBPUSD: {fred: EXUSUK}
+    USDCHF: {fred: EXSZUS}
+    AUDUSD: {fred: EXUSAL}
+    USDCAD: {fred: EXCAUS}
+    NZDUSD: {fred: EXUSNZ}
+    USDNOK: {fred: EXNOUS}
+    USDSEK: {fred: EXSDUS}
+  # Extension au G10, ajoutée le 2026-10-25 AVANT de regarder les résultats : mêmes fair values,
+  # mêmes critères, même seuil, mêmes horizons ; résultats rapportés quels qu'ils soient.
+  # Ces paires n'existent que dans l'historique long (le bot en production ne les traite pas).
+  paires_supplementaires:
+    USDCAD: {ticker: "CAD=X", base: USD, cotation: CAD}
+    NZDUSD: {ticker: "NZDUSD=X", base: NZD, cotation: USD}
+    USDNOK: {ticker: "NOK=X", base: USD, cotation: NOK}
+    USDSEK: {ticker: "SEK=X", base: USD, cotation: SEK}
+  cpi_supplementaires:
+    CAD: {source: bri, id: CA, decalage: 1}
+    NZD: {source: bri, id: NZ, decalage: 4}   # trimestriel répété sur 3 mois, comme l'Australie
+    NOK: {source: bri, id: "NO", decalage: 1}   # guillemets : en YAML, NO non cité = booléen faux
+    SEK: {source: bri, id: SE, decalage: 1}
+  # CPI de la zone euro avant le HICP : CPI allemand (BRI), raccordé en proportion
+  cpi_avant_hicp: {EUR: DE}
+  # Productivité (PPA ajustée, Balassa-Samuelson) : PIB réel par habitant, Banque mondiale.
+  # La valeur de l'année Y est utilisable 6 mois après la fin de Y (juillet de Y+1).
+  productivite:
+    indicateur: NY.GDP.PCAP.KD
+    decalage_apres_annee_mois: 6
+    pays: {USD: USA, EUR: EMU, JPY: JPN, GBP: GBR, CHF: CHE, AUD: AUS, CAD: CAN, NZD: NZL, NOK: NOR, SEK: SWE}

@@ -79,6 +79,24 @@ def evaluer_modeles(config: dict) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]
     return pd.DataFrame(lignes).T, confusions, detail
 
 
+def scorer_tous(communiques: pd.DataFrame, modeles: list[str], config: dict) -> pd.DataFrame:
+    """Score de chaque communiqué (pas seulement le dernier), même agrégation que le bot.
+
+    Sert au backtest du sentiment : une ligne par (banque, date), une colonne score par modèle.
+    """
+    lignes = []
+    for _, doc in communiques.sort_values(["banque", "date"]).iterrows():
+        phrases = decouper_phrases(doc["texte"])
+        ligne = {"banque": doc["banque"], "date": doc["date"], "nb_phrases": len(phrases)}
+        for modele in modeles:
+            agrege = score_document(scorer_avec_cache(phrases, modele, config))
+            ligne[f"score_{modele}"] = agrege["score"]
+            ligne[f"part_hawkish_{modele}"] = agrege["part_hawkish"]
+            ligne[f"part_dovish_{modele}"] = agrege["part_dovish"]
+        lignes.append(ligne)
+    return pd.DataFrame(lignes)
+
+
 def scorer_communiques(config: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Score du dernier communiqué de chaque banque, par modèle, et détail par phrase."""
     params = config["sentiment"]

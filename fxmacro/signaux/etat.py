@@ -20,9 +20,18 @@ from fxmacro.signaux.combinaison import (
 
 
 def sigma_modele(tableau: pd.DataFrame, colonne_fv: str, periode: tuple) -> float:
-    """σ de ln(S / FV) sur la période de calibration (dénominateur du z ancré)."""
+    """σ de ln(S / FV) (dénominateur du z ancré) : celui de l'historique long s'il a été calculé
+    (colonne sigma_*), sinon mesuré sur la période de calibration du tableau."""
+    colonne_sigma = colonne_fv.replace("fv_", "sigma_", 1)
+    if colonne_sigma in tableau:
+        return float(tableau[colonne_sigma].iloc[-1])
     debut, fin = periode
     return float(ecart_log(tableau["spot"], tableau[colonne_fv]).loc[debut:fin].std())
+
+
+def modeles_etat(config: dict) -> list[str]:
+    """Modèles du signal puis modèles affichés seulement (ex. PPA ajustée de la productivité)."""
+    return list(config["signal"]["poids_modeles"]) + list(config["signal"].get("modeles_affichage", []))
 
 
 def ligne_etat(paire: str, tableau: pd.DataFrame, sentiment_par_devise: dict[str, float], config: dict,
@@ -38,7 +47,9 @@ def ligne_etat(paire: str, tableau: pd.DataFrame, sentiment_par_devise: dict[str
         "sentiment_cotation": sentiment_par_devise.get(infos["cotation"], np.nan),
         "p_coint_beer": resultat_beer.p_value_cointegration if resultat_beer is not None else np.nan,
     }
-    for modele in config["signal"]["poids_modeles"]:
+    for modele in modeles_etat(config):
+        if f"fv_{modele}" not in tableau:
+            continue
         ligne[f"fv_{modele}"] = derniere[f"fv_{modele}"]
         ligne[f"sigma_{modele}"] = sigma_modele(tableau, f"fv_{modele}", periode_reference(modele, config))
         ligne[f"z_{modele}_ancre"] = derniere[f"z_{modele}_ancre"]
@@ -62,6 +73,10 @@ def evaluer_signal(ligne: dict | pd.Series, spot: float, config: dict) -> dict:
     delta = differentiel_sentiment(ligne["sentiment_base"], ligne["sentiment_cotation"])
     signal = classer_signal(ligne["paire"], ligne["base"], ligne["cotation"], z_val, delta,
                             params["seuil_z"], params["seuil_sentiment"])
-    ecarts = {f"ecart_{m}_%": 100 * (spot / ligne[f"fv_{m}"] - 1) for m in params["poids_modeles"]}
+    # Modèles affichés seulement : écart et z, sans effet sur z_valorisation ni sur le signal
+    affiches = [m for m in params.get("modeles_affichage", []) if pd.notna(ligne.get(f"fv_{m}", np.nan))]
+    for m in affiches:
+        z[m] = zscore_ancre_direct(spot, ligne[f"fv_{m}"], ligne[f"sigma_{m}"])
+    ecarts = {f"ecart_{m}_%": 100 * (spot / ligne[f"fv_{m}"] - 1) for m in list(params["poids_modeles"]) + affiches}
     return {"spot": spot, **ecarts, **{f"z_{m}": v for m, v in z.items()},
             "z_valorisation": z_val, "beer_exclu": exclu, "delta_sentiment": delta, **signal}

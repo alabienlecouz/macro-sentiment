@@ -89,3 +89,14 @@ def test_beer_inclus_si_cointegre():
     assert r["beer_exclu"] is False
     assert r["z_valorisation"] == pytest.approx((r["z_ppa"] + r["z_beer"]) / 2)
     assert r["orientation"] == "neutre"   # (-1,91 + 1,03) / 2 ≈ -0,44
+
+
+def test_modele_affiche_ne_change_pas_le_signal():
+    config = {"signal": {**CONFIG_DEUX_MODELES["signal"], "modeles_affichage": ["ppa_productivite"]}}
+    ligne = {**_ligne(0.06), "fv_ppa_productivite": 0.80, "sigma_ppa_productivite": 0.05}
+    avec = evaluer_signal(ligne, 1.0, config)
+    sans = evaluer_signal(_ligne(0.06), 1.0, CONFIG_DEUX_MODELES)
+    assert avec["z_valorisation"] == pytest.approx(sans["z_valorisation"])
+    assert avec["orientation"] == sans["orientation"]
+    assert avec["z_ppa_productivite"] == pytest.approx(np.log(1 / 0.80) / 0.05)   # bien calculé et affiché
+    assert avec["ecart_ppa_productivite_%"] == pytest.approx(100 * (1 / 0.80 - 1))

@@ -34,17 +34,22 @@ def _dates_evaluees(index: pd.DatetimeIndex, debut: str) -> pd.DatetimeIndex:
     return index[index >= pd.Timestamp(debut)]
 
 
-def z_ppa_temps_reel(tableau: pd.DataFrame, debut: str, min_obs: int = 60) -> pd.Series:
-    """z ancré de la PPA recalibré à chaque date sur les seules données passées."""
+def ppa_temps_reel(tableau: pd.DataFrame, debut: str, min_obs: int = 60) -> pd.DataFrame:
+    """PPA recalibrée à chaque date sur les seules données passées : écart ln(S / FV) et z ancré."""
     log_reel = (np.log(tableau["spot"]) - np.log(tableau["cpi_cotation"] / tableau["cpi_base"])).dropna()
-    z = pd.Series(np.nan, index=tableau.index, name="z_ppa_tr")
+    resultat = pd.DataFrame(np.nan, index=tableau.index, columns=["ecart", "z"])
     for t in _dates_evaluees(tableau.index, debut):
         fenetre = log_reel.loc[:t]
         if len(fenetre) <= min_obs or t not in fenetre.index:
             continue
         ecart = fenetre - fenetre.mean()
-        z[t] = ecart.iloc[-1] / ecart.std()
-    return z
+        resultat.loc[t, ["ecart", "z"]] = [ecart.iloc[-1], ecart.iloc[-1] / ecart.std()]
+    return resultat
+
+
+def z_ppa_temps_reel(tableau: pd.DataFrame, debut: str, min_obs: int = 60) -> pd.Series:
+    """z ancré de la PPA recalibré à chaque date sur les seules données passées."""
+    return ppa_temps_reel(tableau, debut, min_obs)["z"].rename("z_ppa_tr")
 
 
 def _residus_mco(y: np.ndarray, X: np.ndarray) -> np.ndarray:
@@ -56,17 +61,28 @@ def _residus_mco(y: np.ndarray, X: np.ndarray) -> np.ndarray:
 
 def z_beer_temps_reel(tableau: pd.DataFrame, debut: str, min_obs: int = 96,
                       pas_coint_mois: int = 12) -> pd.DataFrame:
-    """z du BEER ré-estimé à chaque date sur [.. t], et p-value d'Engle-Granger (tous les 12 mois)."""
-    q = taux_change_reel(tableau["spot"], tableau["cpi_base"], tableau["cpi_cotation"]).rename("q")
-    donnees = pd.concat([q, regresseurs_beer(tableau)], axis=1).dropna()
-    resultat = pd.DataFrame(np.nan, index=tableau.index, columns=["z", "p_coint"])
-    for i, t in enumerate(_dates_evaluees(tableau.index, debut)):
+    """BEER ré-estimé à chaque date sur [.. t] : écart ln(S / FV) (= dernier résidu), z ancré,
+    et p-value d'Engle-Granger (tous les 12 mois)."""
+    q = taux_change_reel(tableau["spot"], tableau["cpi_base"], tableau["cpi_cotation"])
+    return regression_q_temps_reel(q, regresseurs_beer(tableau), debut, min_obs, pas_coint_mois)
+
+
+def regression_q_temps_reel(q: pd.Series, regresseurs: pd.DataFrame, debut: str, min_obs: int,
+                            pas_coint_mois: int = 12) -> pd.DataFrame:
+    """MCO du taux de change réel q sur des fondamentaux, ré-estimés à chaque date sur [.. t].
+
+    Écart ln(S / FV) = dernier résidu, z = écart / écart-type des résidus, p-value
+    d'Engle-Granger tous les `pas_coint_mois` mois (reportée entre deux calculs).
+    """
+    donnees = pd.concat([q.rename("q"), regresseurs], axis=1).dropna()
+    resultat = pd.DataFrame(np.nan, index=q.index, columns=["z", "p_coint", "ecart"])
+    for i, t in enumerate(_dates_evaluees(q.index, debut)):
         fenetre = donnees.loc[:t]
         if len(fenetre) <= min_obs or t not in fenetre.index:
             continue
         y, X = fenetre["q"].to_numpy(), fenetre.drop(columns="q").to_numpy()
         residus = _residus_mco(y, X)
-        resultat.loc[t, "z"] = residus[-1] / residus.std(ddof=1)
+        resultat.loc[t, ["z", "ecart"]] = [residus[-1] / residus.std(ddof=1), residus[-1]]
         if i % pas_coint_mois == 0:
             resultat.loc[t, "p_coint"] = coint(y, X, trend="c")[1]
     # p-value reportée entre deux calculs (jamais vers le passé)

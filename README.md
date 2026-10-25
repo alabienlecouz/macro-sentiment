@@ -1,55 +1,59 @@
 # FX Macro Mispricing Monitor
 
-**Detecting potentially mispriced currencies by combining macroeconomic fair-value models with NLP-based analysis of central bank communication.**
+**Can public macroeconomic information predict exchange rates? A point-in-time test on 50 years of
+G10 data: fair values, central bank sentiment and machine learning.**
 
-The system estimates three fair values for each currency pair (purchasing power parity,
-interest rate parity and a behavioural equilibrium exchange rate model) and measures how far the
-market rate deviates from them. It then checks whether the tone of the two central banks confirms
-or contradicts the deviation, using a zero-shot transformer classifier. The result is a
-continuously refreshed dashboard, deployed on a 1 GB cloud VM.
+> **Bottom line.** In a market as liquid as G10 FX, public information is priced almost
+> immediately. Every approach tested here (fair values, central bank tone read by a transformer,
+> Random Forest, XGBoost) fails to beat a coin flip out of sample. Short of having information
+> before the market does, predicting these exchange rates from public data is, in practice, not
+> possible. The one durable effect, a slow pull towards purchasing power parity, plays out over
+> years and is too weak to trade on.
 
-Pairs covered: **EURUSD · USDJPY · GBPUSD · USDCHF · AUDUSD** (configurable).
+The project estimates fair values for currency pairs (purchasing power parity and a behavioural
+equilibrium exchange rate model), turns the gap between the market rate and the fair value into a
+signal, and backtests that signal in real time. A transformer reads central bank statements to
+confirm or contradict the signal. Everything runs on free data and is deployed as a dashboard on a
+1 GB cloud VM.
 
-![USDJPY spot vs PPP and BEER fair values, with anchored z-scores](docs/images/fair_values_usdjpy.png)
+### Key results
 
-*USDJPY since 2004. Top: monthly spot against the PPP and BEER fair values. Bottom: deviation
-from each model in standard deviations; dashed lines are the ±1σ signal thresholds. By late 2026,
-both models flag the yen as undervalued (PPP z = +2.2, BEER z = +1.6).*
+- **PPP has a slow but measurable pull.** Over 1976–2026 and 9 G10 pairs, the gap to PPP predicts
+  the next two years of returns: about **20 % of the gap closes in two years** (pooled $t \approx -2.1$,
+  Driscoll-Kraay errors; half-life 4–5 years). A naive moving-average "fair value" has no such pull.
+- **It is not a trading signal.** A rule that trades when the gap exceeds one standard deviation is
+  right **53 % of the time** on 144 independent observations ($p = 0.45$): indistinguishable from a
+  coin flip.
+- **Most of the apparent edge is look-ahead.** Calibrated on the full sample, the same rule looks
+  right 68 % of the time; re-estimated on past data only, 54 %.
+- **Central bank sentiment is read correctly but already priced.** DeBERTa-v3 (zero-shot NLI)
+  labels policy stance with 82 % accuracy (FinBERT: 62 %) and its tone anticipates ECB and BoE rate
+  moves, yet EURUSD and GBPUSD do not react to it, neither on the day nor in the following months.
+- **Machine learning does not help.** In a purged walk-forward test, Random Forest and XGBoost are
+  right about 51 % of the time out of sample; XGBoost, right 74 % of the time on its training data,
+  simply overfits.
 
-### Highlights
+![Spot vs PPP and productivity-adjusted PPP, G10, 1971–2026](docs/images/fair_values_historique_long.png)
 
-- **Three fair-value models**: relative PPP, covered and uncovered interest parity, and a BEER
-  regression with Newey-West inference and an Engle-Granger cointegration test.
-- **Strictly point-in-time data**: every series is lagged by its publication delay, and quarterly
-  data become step functions, never interpolated. No look-ahead in the data alignment (model
-  calibration is tested separately in the real-time backtest, section 8).
-- **Central bank sentiment** from a zero-shot NLI model (DeBERTa-v3), evaluated against FinBERT on
-  a hand-labelled set: **82 % vs 62 % accuracy**.
-- **Production deployment** on a 908 MB RAM VM: the transformer runs through ONNX Runtime with
-  memory-mapped weights, peaking at 687 MB, with no PyTorch on the server.
-- **Free data only**: FRED, BIS, OECD, ECB, Yahoo Finance and central bank websites.
-- **Macro regime layer**: each economy labelled monthly as goldilocks, reflation, stagflation or
-  disinflation, from point-in-time growth and inflation dynamics (descriptive, section 7).
-- **Honest evaluation**: an expanding-window backtest removes look-ahead bias from the signal
-  history and shows how much of the apparent edge disappears (section 8).
-- **Modular, tested codebase**: 96 pytest tests, mostly on synthetic data with known answers.
+*Spot (blue) against PPP (orange) and productivity-adjusted PPP (green), 1971–2026, with the gap
+in % on the right. Rates swing ±20–40 % around their fair value and take years to come back.*
 
 ---
 
 ## Contents
 
 1. [Pipeline](#1-pipeline)
-2. [Point-in-time data](#2-point-in-time-data)
+2. [Data](#2-data)
 3. [Fair-value models](#3-fair-value-models)
-4. [Measuring mispricing](#4-measuring-mispricing)
-5. [Central bank sentiment](#5-central-bank-sentiment)
-6. [Signal](#6-signal)
-7. [Macro regimes](#7-macro-regimes)
-8. [Results snapshot](#8-results-snapshot)
-9. [Engineering](#9-engineering)
-10. [Quickstart](#10-quickstart)
-11. [Limitations and next steps](#11-limitations-and-next-steps)
-12. [References](#references)
+4. [Signal generation](#4-signal-generation)
+5. [Backtest and evaluation](#5-backtest-and-evaluation)
+6. [Central bank sentiment overlay](#6-central-bank-sentiment-overlay)
+7. [Current snapshot](#7-current-snapshot)
+8. [Limitations and next steps](#8-limitations-and-next-steps)
+9. [Running it](#9-running-it)
+
+Technical details (point-in-time rules, BEER estimates, sentiment method, deployment) are in
+[docs/details.md](docs/details.md).
 
 ---
 
@@ -57,531 +61,310 @@ both models flag the yen as undervalued (PPP z = +2.2, BEER z = +1.6).*
 
 ```mermaid
 flowchart LR
-    subgraph Free data sources
-        YF[Yahoo Finance<br/>FX rates]
-        FRED[FRED<br/>US & euro area CPI]
-        BIS[BIS<br/>CPI, policy rates]
-        OECD[OECD<br/>current account, terms of trade,<br/>business confidence]
-        ECB[ECB<br/>euro area BoP]
-        CB[Central bank<br/>statements]
-    end
-    YF & FRED & BIS & OECD & ECB --> A[Point-in-time<br/>monthly alignment]
-    A --> PPP[PPP] & IRP[Interest parity] & BEER[BEER]
-    PPP & BEER --> Z[Anchored z-scores]
-    CB --> NLI[Zero-shot NLI<br/>DeBERTa-v3]
-    Z & NLI --> S[Signal:<br/>direction + strength]
-    S --> D[Streamlit dashboard]
-    A -->|confidence, CPI,<br/>policy rates| R[Macro regimes<br/>descriptive]
-    R --> D
-    Z -.-> BT[Real-time backtest<br/>expanding window]
-    YF -. quotes every 5 min .-> D
+    D[1. Data<br/>FX, CPI, rates,<br/>fundamentals] --> FV[2. Fair value<br/>PPP, BEER]
+    FV --> S[3. Signal<br/>z-score, threshold]
+    S --> BT[4. Backtest<br/>real time,<br/>1976–2026]
+    CB[Central bank<br/>statements] --> NLI[5. Sentiment<br/>DeBERTa zero-shot]
+    NLI -->|confirms or<br/>contradicts| S
+    NLI -.->|tested: no effect| BT
 ```
 
-The workload is split in two:
-
-- **A batch job**, run twice a day, downloads the data, re-estimates the models, scores the
-  central bank statements and computes the macro regime of each economy.
-- **A lightweight dashboard** pulls the latest quote every five minutes and recomputes the
-  deviations and the signal against the stored fair values, without re-running any model. It also
-  shows the macro regimes, as a table of the current state and a timeline over the last ten years.
-
-Macro data are monthly or quarterly, so re-estimating the models more often would change nothing.
-Only the exchange rate moves intraday, so only the exchange rate is refreshed intraday.
+1. **Data**: free sources, aligned so that each date only uses what was published by then.
+2. **Fair value**: PPP (the main model) and BEER.
+3. **Signal**: the gap to the fair value, in standard deviations; act beyond ±1.
+4. **Backtest**: every model re-estimated at each date on past data only.
+5. **Sentiment**: central bank tone grades the strength of the signal.
 
 ---
 
-## 2. Point-in-time data
+## 2. Data
 
-Mixing a daily exchange rate with monthly CPI and quarterly national accounts is where look-ahead
-bias usually creeps in. Every transformation in the project uses only information that was
-**published** at the date in question.
+| Data | Source | History |
+|---|---|---|
+| Exchange rates | FRED (monthly), Yahoo Finance (daily) | 1971– |
+| Consumer prices | FRED, BIS | 1960– |
+| Policy rates | BIS | 2000– |
+| Current account, terms of trade | OECD, ECB | 2000– |
+| GDP per capita (productivity) | World Bank | 1960– |
+| Central bank statements | Fed, ECB, BoE, BoJ, SNB, RBA websites | latest |
 
-| Issue | Treatment |
-|---|---|
-| Daily FX vs monthly CPI | Monthly **average** of the spot rate. The CPI is itself an average price level over the month. |
-| CPI for month $m$ is released in $m+1$ | Series shifted forward by its publication lag: $\tilde P_t = P_{t-\ell}$, with $\ell = 1$ month. |
-| Quarterly data (current account, deflators) | Released about 3 months after quarter end, then **carried forward** as a step function until the next release. Never interpolated, since interpolation would use the next, unpublished quarter. |
-| Australian CPI (quarterly, repeated monthly at the source) | Lag of 4 months: the January value (Q1) is only known at the end of April. |
-| Latest CPI not yet published (used in real rates for the BEER) | 12-month inflation is computed on published CPI only, then carried forward; carrying the CPI level forward first would invent an inflation rate. The price *level* itself is carried forward for PPP, which is correct. |
-| BoJ quantitative-easing regimes with no policy-rate target | Filled with 0 %, the prevailing money-market rate, rather than interpolated. |
-| Euro area current account before 2013 (missing at the OECD) | Rebuilt from ECB balance-of-payments data and GDP, then level-adjusted to the OECD series on their 2013–2022 overlap. |
+**Point in time.** Every series is shifted by its publication lag (CPI for month $m$ is used from
+$m+1$), and quarterly data are carried forward, never interpolated. EURUSD before 1999 uses the
+standard "synthetic euro" (Deutsche mark at the fixed conversion rate). Full rules in
+[docs/details.md](docs/details.md#1-point-in-time-data).
 
 ---
 
 ## 3. Fair-value models
 
-**Notation.** A pair `XXXYYY` is quoted as units of `YYY` per unit of `XXX`. $S_t$ is the spot
-rate, $P_t$ a price index and $i_t$ an interest rate.
+A pair `XXXYYY` is quoted as units of `YYY` per unit of `XXX`; $S_t$ is the spot rate and $P_t$ a
+price index.
 
-### 3.1 Relative purchasing power parity (PPP)
+### 3.1 Purchasing power parity (main model)
 
-If prices rise faster in country `YYY`, its currency should depreciate in proportion:
+If prices rise faster in `YYY`, its currency should depreciate in proportion:
 
-$$FV^{PPP}_t = k \cdot \frac{P^{YYY}_t}{P^{XXX}_t}$$
+$$FV^{PPP}_t = k \cdot \frac{P^{YYY}_t}{P^{XXX}_t}, \qquad \ln k = \frac{1}{T}\sum_{t=1}^{T}\left[\ln S_t - \ln\frac{P^{YYY}_t}{P^{XXX}_t}\right]$$
 
-Relative PPP pins down *changes* only, so the constant $k$ has to be calibrated. Anchoring $k$ on
-a single base date makes the result depend on whether the exchange rate happened to be at
-equilibrium that day. Instead, the model assumes PPP holds **on average** over the sample, i.e.
-the log real exchange rate is mean-reverting:
+The constant assumes PPP holds **on average** over the sample. PPP gaps have a half-life of 3 to 5
+years (Rogoff, 1996), so the calibration window must span several cycles: the bot calibrates on
+**1971–today**, the whole floating-rate era.
 
-$$\ln k = \frac{1}{T}\sum_{t=1}^{T}\left[\ln S_t - \ln\frac{P^{YYY}_t}{P^{XXX}_t}\right]$$
-
-This is consistent with the evidence that PPP deviations have a half-life of 3 to 5 years
-(Rogoff, 1996), so the calibration window needs to span several cycles.
-
-### 3.2 Interest rate parity
-
-**Covered interest parity (CIP)** is a no-arbitrage condition. Investing in `XXX` at $i_{XXX}$
-must yield the same as converting to `YYY`, investing at $i_{YYY}$, and converting back at the
-forward rate:
-
-$$F_{t,h} = S_t\left(\frac{1+i^{YYY}_t}{1+i^{XXX}_t}\right)^{h}$$
-
-It also gives the annualised **carry** of a long `XXX` position, approximately
-$i^{XXX} - i^{YYY}$.
-
-**Uncovered interest parity (UIP)** adds the assumption that the forward rate is an unbiased
-predictor of the future spot rate, $E_t[S_{t+h}] = F_{t,h}$. The UIP fair value today is what the
-forward predicted $h$ months ago:
-
-$$FV^{UIP}_t = S_{t-h}\left(\frac{1+i^{YYY}_{t-h}}{1+i^{XXX}_{t-h}}\right)^{h}$$
-
-UIP fails empirically: high-yielding currencies tend not to depreciate as much as predicted (the
-forward premium puzzle, Fama 1984). And since $FV^{UIP}$ is essentially the lagged spot rate, its
-deviation mostly measures a 12-month excess return. It is therefore reported as a
-**momentum/carry indicator** and excluded from the valuation signal.
-
-### 3.3 Behavioural equilibrium exchange rate (BEER)
+### 3.2 Behavioural equilibrium exchange rate (BEER)
 
 Following Clark and MacDonald (1998), the log real exchange rate is regressed on relative
-fundamentals (`XXX` minus `YYY`):
+fundamentals:
 
-$$q_t = \ln S_t + \ln P^{XXX}_t - \ln P^{YYY}_t$$
+$$q_t = \ln S_t + \ln P^{XXX}_t - \ln P^{YYY}_t = \alpha + \beta_1\,\Delta r_t + \beta_2\,\Delta\ln \mathit{ToT}_t + \beta_3\,\Delta \mathit{CA}_t + \varepsilon_t$$
 
-$$q_t = \alpha + \beta_1\,\Delta r_t + \beta_2\,\Delta\ln \mathit{ToT}_t + \beta_3\,\Delta \mathit{CA}_t + \varepsilon_t$$
+with the real policy-rate differential $\Delta r$, the terms-of-trade differential and the current
+account differential. Standard errors are Newey-West. Since $q_t$ and the fundamentals are I(1), the
+regression is only meaningful if they are **cointegrated** (Engle-Granger test); otherwise it may be
+spurious (Granger and Newbold, 1974). **No pair is cointegrated at 5 %** on 2000–2026, so the BEER
+enters the signal only when $p < 0.10$ (today: GBPUSD only). Estimates in
+[docs/details.md](docs/details.md#4-beer-estimates).
 
-| Regressor | Definition | Expected sign |
-|---|---|---|
-| $\Delta r$ | Real policy-rate differential (nominal rate minus 12-month inflation) | + (capital inflows) |
-| $\Delta \ln \mathit{ToT}$ | Terms-of-trade differential (export deflator / import deflator) | + (income effect) |
-| $\Delta \mathit{CA}$ | Current account differential, % of GDP, 4-quarter average | + (net foreign asset accumulation) |
+### 3.3 Productivity-adjusted PPP (displayed only)
 
-The fair value maps the fitted real rate back to a nominal one:
+The Balassa-Samuelson effect: faster productivity growth raises non-tradable prices, so the real
+exchange rate trends upward. Relative real GDP per capita $y$ enters the PPP equation:
 
-$$FV^{BEER}_t = e^{\hat q_t}\cdot\frac{P^{YYY}_t}{P^{XXX}_t}, \qquad \ln\frac{S_t}{FV^{BEER}_t} = \hat\varepsilon_t$$
+$$q_t = a + b\,(y^{XXX}_t - y^{YYY}_t) + \varepsilon_t, \qquad b > 0$$
 
-**Econometrics.**
-
-- OLS in levels, with **Newey-West (HAC)** standard errors over 12 lags, because the residuals are
-  highly autocorrelated.
-- $q_t$ and the fundamentals are I(1), so a levels regression is only meaningful if they are
-  **cointegrated**. Otherwise it is a spurious regression (Granger and Newbold, 1974). This is
-  checked with an **Engle-Granger** test, i.e. an ADF test on $\hat\varepsilon_t$ with MacKinnon
-  critical values.
-- The speed of mean reversion is the **half-life** from an AR(1) fit on the residuals,
-  $\ln 0.5 / \ln\hat\rho$.
+It fixes the drift of USDJPY, but its advantage over plain PPP did not survive the robustness
+checks in section 5, so it is shown on the dashboard and kept out of the signal.
 
 ---
 
-## 4. Measuring mispricing
+## 4. Signal generation
 
-For each model $m$, the deviation is $e^m_t = \ln(S_t / FV^m_t)$. A positive value means the
-base currency is overvalued. Two standardisations answer different questions:
+For each model $m$, the gap is $e^m_t = \ln(S_t / FV^m_t)$ (positive: `XXX` overvalued), and its
+z-score is $z^m_t = e^m_t / \sigma_m$, with $\sigma_m$ the standard deviation of the gap over the
+calibration sample. Valuation combines the models:
 
-| Measure | Formula | Question it answers |
-|---|---|---|
-| **Anchored z-score** | $z^m_t = e^m_t / \sigma_m$, with $\sigma_m$ the full-sample std of $e^m$ | How far is the rate from **the model**? |
-| Rolling z-score | $(e^m_t - \bar e^m_{60}) / s^m_{60}$ over a 60-month window | How unusual is the deviation **relative to the last five years**? |
-
-They can disagree sharply. In October 2026 the euro was 11.8 % **below** PPP (anchored
-$z = -1.0$), yet its rolling z-score was **positive** (+0.4), because it had been even cheaper on
-average over the previous five years. The rolling version re-centres on recent history and loses
-the economic anchor, so the signal uses the anchored z-score.
-
----
-
-## 5. Central bank sentiment
-
-### 5.1 Zero-shot classification by natural language inference
-
-Statements from the Fed, ECB, BoE, BoJ, SNB and RBA are scraped (HTML or PDF), cleaned and split
-into sentences. Each sentence $x$ is classified by `MoritzLaurer/deberta-v3-base-zeroshot-v2.0`, a
-model trained only for **natural language inference**: deciding whether a premise entails a
-hypothesis.
-
-For each label $k \in \{\text{hawkish}, \text{dovish}, \text{neutral}\}$, the model scores the
-pair ($x$, "This is $k$."). Let $z_k$ be its entailment logit. The class probabilities are a
-softmax across labels:
-
-$$P(k \mid x) = \frac{\exp(z_k)}{\sum_{j}\exp(z_j)}$$
-
-The model has never been trained on the word "hawkish". The classification comes entirely from its
-general ability to judge entailment.
-
-### 5.2 Aggregation
-
-Each sentence gets a polarity score
-$s_i = P_i(\text{hawkish}) - P_i(\text{dovish}) \in [-1, 1]$. A statement's score weights each
-sentence by how much monetary policy signal it carries:
-
-$$S = \frac{\sum_i s_i\,\big(1 - P_i(\text{neutral})\big)}{\sum_i \big(1 - P_i(\text{neutral})\big)}$$
-
-so that procedural or purely descriptive sentences barely count.
-
-### 5.3 Evaluation against FinBERT
-
-Both models were evaluated on 45 hand-labelled central bank sentences (15 per class). FinBERT
-outputs positive/negative/neutral, mapped naively to hawkish/dovish/neutral.
-
-| Model | Accuracy | F1 hawkish | F1 dovish | F1 neutral |
-|---|---|---|---|---|
-| **DeBERTa-v3 zero-shot (NLI)** | **0.82** | 0.80 | 0.85 | 0.82 |
-| FinBERT | 0.62 | 0.37 | 0.65 | 0.81 |
-
-FinBERT measures **tone**, not **policy stance**. "Inflation remains well above target and further
-tightening may be required" sounds negative, so FinBERT labels it dovish, while the message is
-clearly hawkish.
-
-The wording of the hypothesis matters a lot. With the same model, macro-F1 ranges from 0.63 with
-a long descriptive hypothesis to 0.82 with "This is hawkish." The large model only adds two points
-(0.84) for about 5× the compute.
-
-> **Caveat.** The hypothesis wording was selected on these same 45 sentences, so 82 % is an
-> optimistic, in-sample figure. A held-out set would be needed for an unbiased estimate.
-
----
-
-## 6. Signal
-
-**1. Valuation.** A weighted average of the anchored z-scores of the valuation models (UIP is
-excluded, see 3.2):
-
-$$z^{val}_t = \frac{\sum_m w_m z^m_t}{\sum_m w_m}, \qquad w_{PPP} = w_{BEER} = 0.5$$
-
-The BEER only enters if it is **cointegrated**: if its Engle-Granger p-value exceeds 0.10, its
-z-score is dropped and the weights are renormalised, so $z^{val} = z^{PPP}$. Without cointegration
-the BEER regression may be spurious; its z-score is still displayed for information.
-
-**2. Confirmation.** The sentiment differential between the two central banks:
-
-$$\Delta s = S_{XXX} - S_{YYY}$$
-
-A more hawkish central bank supports its currency.
-
-**3. Rule.**
+$$z^{val}_t = \frac{\sum_m w_m z^m_t}{\sum_m w_m}, \qquad w_{PPP} = w_{BEER} = 0.5 \text{ (BEER only if cointegrated)}$$
 
 | Valuation | Direction |
 |---|---|
 | $\lvert z^{val}\rvert < 1$ | neutral |
-| $z^{val} \le -1$ (XXX undervalued) | XXXYYY expected to **rise** |
-| $z^{val} \ge +1$ (XXX overvalued) | XXXYYY expected to **fall** |
+| $z^{val} \le -1$ | `XXXYYY` expected to **rise** |
+| $z^{val} \ge +1$ | `XXXYYY` expected to **fall** |
 
-| Sentiment of the **undervalued** currency's central bank vs the other | Strength |
-|---|---|
-| more hawkish by at least 0.15 | **strong** (confirmed) |
-| more dovish by at least 0.15 | **weak** (contradicted) |
-| in between, or unavailable | moderate |
-
-All weights and thresholds are set in `config.yaml`.
+The sentiment overlay (section 6) then grades the strength. All parameters are in `config.yaml`
+and were fixed before the evaluation.
 
 ---
 
-## 7. Macro regimes
+## 5. Backtest and evaluation
 
-A **descriptive** layer that labels, each month, the macro environment of each of the six
-economies. It does not feed the valuation signal and is not a forecast: it gives context for
-reading the signal (e.g. an undervalued currency in a stagflation regime).
+A fair value "prices" well if the rate **comes back to it**, not if it tracks the rate closely.
+Three checks, each using only data available at the date: does the look-ahead matter, do gaps
+predict returns, and does the trading rule work?
 
-**Data** (all point-in-time, lagged by their publication delay):
+### 5.1 Look-ahead: most of the apparent edge disappears
 
-| Input | Source | Publication lag |
-|---|---|---|
-| Growth proxy: business confidence indicator, amplitude-adjusted (100 = long-run average) | OECD, `DSD_STES@DF_CLI`, measure `BCICP` | 1 month (2 for Switzerland and Australia) |
-| 12-month CPI inflation | FRED / BIS (as in section 2) | 1 month (4 for quarterly Australian CPI) |
-| Policy rate | BIS | none |
+Calibrating PPP, the BEER and $\sigma_m$ on the full sample tells the model in advance where the
+long-run mean lies. Re-estimating at each date on past data only (expanding window), 5 pairs,
+2009–2026, 12-month horizon:
 
-The OECD composite leading indicator (CLI) would be the natural growth proxy, but the OECD does not
-publish it for the euro area or Switzerland. The business confidence indicator exists for all six
-economies, so it is used everywhere to keep a single definition. It leads the cycle less than a
-composite indicator does.
-
-**Indicators.** With $B_t$ the confidence index and $\pi_t$ 12-month inflation:
-
-$$g_t = B_t - B_{t-3}, \qquad \Delta\pi_t = \pi_t - \pi_{t-6}$$
-
-plus the gap to a 2 % inflation target and the monetary cycle: the 6-month change in the policy
-rate classified as tightening (> +25 bp), easing (< −25 bp) or pause.
-
-**Rule.** The regime is given by the signs of the two dynamics. A change of exactly zero counts as
-"not rising".
-
-| | Inflation rising ($\Delta\pi > 0$) | Inflation stable or falling ($\Delta\pi \le 0$) |
-|---|---|---|
-| **Growth improving** ($g > 0$) | reflation | goldilocks |
-| **Growth stable or deteriorating** ($g \le 0$) | stagflation | disinflation |
-
-**Neutral zone.** A dynamic counts as "flat" when $\lvert x_t\rvert < 0.25\,\hat\sigma_t$, where
-$\hat\sigma_t$ is the standard deviation of that dynamic estimated on an **expanding window** (past
-data only, at least 24 months). A month in which growth **or** inflation is flat proposes no new
-regime: the previous one is kept. This rule was added after a first check showed regimes lasting
-only about 5 months on average, i.e. flipping on noise. The 0.25σ threshold is a noise criterion
-fixed in advance, not tuned to the historical episodes below. As expected from that threshold,
-about a third of months are "neutral" (32–41 % depending on the economy).
-
-**Persistence.** A new regime is adopted only after two consecutive months (hysteresis), otherwise
-the previous one is kept; a neutral month interrupts the count.
-
-**Unpublished months.** Indicators are computed on the raw published series, and only then is the
-latest *computed* value carried forward, for up to 3 months. Carrying the CPI level forward first
-would divide an old CPI by a newer 12-month base and invent an inflation rate. A carried-forward
-month is flagged ("not yet published") and behaves like a neutral month: it keeps the current
-regime and can neither propose nor confirm a change. Beyond 3 months the month is undetermined and
-the confirmation restarts, so no regime is ever invented. Every quantity uses only past data
-(checked by tests). All thresholds were fixed before looking at the results, except the neutral
-zone (see above).
-
-**Current state** (October 2026; "this month" is the unconfirmed reading: *neutral* = one of the
-dynamics is within the noise band, *not yet published* = the month's data are not out yet and the
-last computed values are shown; the central bank tone is today's score from section 5 and has no
-history):
-
-| Currency | Regime | Months in regime | This month | Confidence − 100 | 12m inflation | Gap to target | Monetary cycle | CB tone |
-|---|---|---|---|---|---|---|---|---|
-| USD | reflation | 4 | neutral | +0.34 | 3.7 % | +1.7 | pause | +0.26 |
-| EUR | reflation | 2 | reflation | +0.19 | 3.8 % | +1.8 | tightening | +0.29 |
-| JPY | goldilocks | 34 | not yet published | +1.68 | 1.9 % | −0.1 | tightening | −0.03 |
-| GBP | disinflation | 5 | not yet published | +1.45 | 3.1 % | +1.1 | pause | +0.29 |
-| CHF | stagflation | 4 | not yet published | +0.62 | 0.8 % | −1.2 | pause | +0.18 |
-| AUD | stagflation | 6 | neutral | −0.08 | 3.9 % | +1.9 | tightening | +0.20 |
-
-**Sanity check** (`scripts/verifier_regimes.py`; regimes now last 7–12 months on average, against
-5–7 before the neutral zone):
-
-- In 2008–09 all six economies move from stagflation to disinflation.
-- During the 2021–22 inflation surge they go through reflation, then stagflation.
-- In 2023–24 they mostly settle in disinflation or goldilocks.
-
-**Limitations.**
-
-- **Regimes are recognised 3 to 5 months late** (publication lag + 3-month change + two-month
-  confirmation). The tool describes trends and misses brief shocks. Covid is the clearest case: the
-  collapse in business confidence only shows up in the indicators in April 2020 (euro area, UK) and
-  May 2020 (US), and the regime does not change at all, because these economies were already
-  classified as disinflation after the 2019 slowdown.
-- **Known artefacts.** Japan's consumption-tax hike of October 2019 lifts 12-month inflation for
-  exactly one year, then drops out mechanically. Australian CPI is quarterly (repeated over three
-  months at the source), so its inflation dynamic moves in steps.
-- **No real-time vintages**: OECD indicators are revised after publication, and without archived
-  vintages the history uses today's revised values.
-- **Thresholds are set a priori**: horizons, the 25 bp band, the 0.25σ neutral zone and the
-  two-month confirmation are reasonable choices, not estimated ones. The neutral zone itself was
-  added after a first look at the results (see above).
-
----
-
-## 8. Results snapshot
-
-*As of 17 October 2026. Model output, not investment advice.*
-
-**Valuation and signal**
-
-| Pair | Spot | PPP gap | BEER gap | $z^{PPP}$ | $z^{BEER}$ | BEER p (EG) | $z^{val}$ | Signal |
-|---|---|---|---|---|---|---|---|---|
-| EURUSD | 1.124 | −11.6 % | +7.3 % | −1.01 | +0.96 | 0.23 → excluded | **−1.01** | **EURUSD ↑, moderate** |
-| USDJPY | 157.99 | +78.2 % | +24.5 % | +2.24 | +1.63 | 0.93 → excluded | **+2.24** | **USDJPY ↓, weak** |
-| GBPUSD | 1.333 | −8.2 % | +12.1 % | −0.64 | +1.34 | 0.06 → included | +0.35 | neutral |
-| USDCHF | 0.824 | +7.3 % | −3.1 % | +0.86 | −0.51 | 0.13 → excluded | +0.86 | neutral |
-| AUDUSD | 0.695 | −11.5 % | −9.4 % | −0.82 | −1.16 | 0.66 → excluded | −0.82 | neutral |
-
-Only GBPUSD keeps its BEER. The yen is undervalued against the dollar, but the signal is **weak**
-because the Fed's statement scores more hawkish (+0.26) than the BoJ's (−0.03). For EURUSD, PPP
-and BEER pointed in opposite directions and cancelled out; with the non-cointegrated BEER removed,
-the euro's 11.6 % PPP undervaluation now triggers a signal, of moderate strength because the ECB
-and Fed sound about equally hawkish (Δs = +0.03).
-
-**BEER estimates** (monthly, 2000–2026; HAC t-statistics; bold = significant at 5 %)
-
-| Pair | $\beta_{\text{real rate}}$ | $\beta_{\text{ToT}}$ | $\beta_{\text{CA}}$ | $R^2$ | Engle-Granger p | Half-life |
-|---|---|---|---|---|---|---|
-| EURUSD | 0.007 | **1.41** | −0.014 | 0.65 | 0.23 | 12 m |
-| USDJPY | **0.030** | **1.11** | **−0.032** | 0.72 | 0.93 | 20 m |
-| GBPUSD | 0.013 | **1.76** | **0.031** | 0.57 | 0.06 | 11 m |
-| USDCHF | 0.014 | **0.48** | −0.003 | 0.45 | 0.13 | 9 m |
-| AUDUSD | **0.028** | **0.52** | **−0.036** | 0.69 | 0.66 | 6 m |
-
-- **Terms of trade** come out with the expected sign and are significant for every pair.
-- **Cointegration is not established at the 5 % level for any pair** (GBPUSD is closest, at
-  p = 0.06). This is common with about 25 years of monthly data, where the test has low power,
-  but the BEER fair values should be read with caution.
-- The **current account** has the wrong sign for EUR, JPY and AUD. This is consistent with reverse
-  causality (a weak currency improves the trade balance), which biases OLS. Net foreign assets, a
-  stock rather than a flow, would be the standard fix.
-
-### Real-time backtest
-
-How useful would the valuation signal have been? Section 3 calibrates PPP, the BEER and each
-$\sigma_m$ on the **full sample**, so at any past date the z-score uses data from the future. The
-backtest (`scripts/backtest_temps_reel.py`) instead re-calibrates every model at each date $t$ on
-data up to $t$ only (an **expanding window**), then measures the pair's log return over the next
-12 months, signed by the signal. All versions are evaluated on the same dates (2009 onwards),
-threshold $\lvert z\rvert \ge 1$. On the last date, the real-time and full-sample z-scores coincide,
-so today's signal is unaffected.
-
-*Average of the 5 pairs:*
-
-| Version | Months with a signal | Hit rate | Mean 12-month return | Independent obs. (pooled) |
+| Version | Hit rate | Mean 12-month return | Independent obs. | p (vs 50 %) |
 |---|---|---|---|---|
-| a) Full-sample calibration (look-ahead) | 28.8 % | 69.3 % | +4.96 % | 22 |
-| b) Real time, PPP + BEER | 43.7 % | 53.8 % | +0.91 % | 38 |
-| c) Real time, PPP only | 59.7 % | 54.4 % | +0.94 % | 55 |
-| d) Real time, BEER only when cointegrated | 55.2 % | 52.2 % | +0.85 % | 49 |
+| Full-sample calibration (look-ahead) | 68 % | +4.6 % | 22 | 0.52 |
+| Real time, PPP + BEER | 54 % | +0.9 % | 38 | 0.63 |
 
-*Per pair (months with a signal / hit rate):*
+Monthly 12-month returns overlap, so only non-overlapping observations are counted as independent.
+Per-pair results in [docs/details.md](docs/details.md#5-real-time-backtest-20092026).
 
-| Pair | a) full sample | b) real time | c) PPP only | d) BEER if cointegrated |
+### 5.2 Do gaps predict returns? (1976–2026)
+
+Seventeen years are too short for gaps with a 4-year half-life, so the test uses monthly data since
+1971. For each model, the real-time gap is regressed on the future return:
+
+$$r_{t\to t+h} = \alpha + \beta\,e_t + \varepsilon_t, \qquad r_{t\to t+h} = \ln S_{t+h} - \ln S_t, \quad h \in \{12, 24\} \text{ months}$$
+
+$\beta = -1$ means the gap fully closes within $h$; $\beta = 0$ means no information. Pairs are
+pooled with **Driscoll-Kraay** errors, robust to overlapping returns and to shocks common to all
+pairs (all are quoted against the dollar). The benchmark is a naive "fair value" equal to the
+**5-year moving average** of the rate.
+
+**Pooled $t$ of $\beta$** (more negative = stronger pull towards the fair value):
+
+| Sample | Model | 12 m | 24 m | 24 m, fixed effects | Median half-life |
+|---|---|---|---|---|---|
+| 5 pairs | PPP | −1.79 | −2.15 | −2.29 | 53 m |
+| | Productivity-adjusted PPP | −2.39 | −2.81 | −2.69 | 39 m |
+| | 5-year moving average | −0.83 | −1.73 | −1.70 | 38 m |
+| **9 pairs (G10)** | PPP | −1.76 | **−2.09** | **−2.26** | 55 m |
+| | Productivity-adjusted PPP | −1.80 | −2.11 | −1.91 | 48 m |
+| | 5-year moving average | −0.51 | −1.11 | −0.95 | 46 m |
+
+The first specification (plain pooled OLS) was fixed in advance. The fixed-effects version, with
+gaps standardised in real time, was **added after seeing the first results**, because USDJPY's large,
+persistent gap dominated the pooled slope. Both are reported.
+
+### 5.3 Does the trading rule work?
+
+Rule $\lvert z\rvert \ge 1$, real-time z-scores, hit rate on independent observations, pairs pooled:
+
+| | 5 pairs, 12 m | 5 pairs, 24 m | 9 pairs, 12 m | 9 pairs, 24 m |
 |---|---|---|---|---|
-| EURUSD | 29 % / 90 % | 28 % / 68 % | 61 % / 57 % | 46 % / 58 % |
-| USDJPY | 33 % / 38 % | 75 % / 32 % | 87 % / 38 % | 87 % / 38 % |
-| GBPUSD | 28 % / 74 % | 50 % / 49 % | 61 % / 56 % | 52 % / 51 % |
-| USDCHF | 26 % / 69 % | 35 % / 56 % | 38 % / 68 % | 40 % / 61 % |
-| AUDUSD | 29 % / 76 % | 31 % / 65 % | 51 % / 53 % | 51 % / 53 % |
+| PPP | 50 %, p = 1.00 | 58 %, p = 0.24 | 49 %, p = 0.85 | 53 %, p = 0.45 |
+| Productivity-adjusted PPP | 54 %, p = 0.46 | 62 %, p = 0.07 | 50 %, p = 0.95 | 54 %, p = 0.35 |
+| 5-year moving average | 47 %, p = 0.63 | 52 %, p = 0.81 | 46 %, p = 0.30 | 49 %, p = 0.86 |
 
-- **Most of the apparent edge is look-ahead.** Calibrating on the full sample tells the model in
-  advance where the long-run mean lies, so the hit rate drops from about 69 % to about 54 % once
-  only past data are used, and the mean 12-month return from +5.0 % to +0.9 %.
-- **Monthly 12-month returns overlap.** Two consecutive months share 11 months of return, so the
-  hundreds of monthly observations are far from independent. Keeping one month every 12 leaves only
-  **38 independent signals** for version b (21 correct, 55 %).
-- **54 % is not distinguishable from a coin flip.** Binomial tests against 50 % on the
-  non-overlapping observations give: real time (version b): 55 % on 38 independent obs.,
-  p = 0.63; full-sample calibration (with look-ahead, version a): 64 % on 22, p = 0.29.
-  A greedy non-overlapping sample (keep an active month, skip 12 months, repeat) gives, for
-  version b, 53 observations with a 58 % hit rate (31 of 53), p ≈ 0.27. The conclusion, no
-  statistical significance, therefore does not depend on how the independent sample is drawn.
-- **Even 38 overstates the evidence.** These observations pool 5 currency pairs that are
-  themselves correlated (4 of the 5 contain the US dollar), so the effective number of
-  independent observations is smaller still.
-- **USDJPY is the main failure.** Since 2013 the yen has looked cheap on PPP almost continuously
-  and kept getting cheaper; real-time hit rate 32 % (see the value trap in section 11).
+### 5.4 Conclusions
 
-Neither transaction costs nor carry are included: this is a test of predictive content, not a
-measure of profitability.
+- **Supported: a slow pull towards PPP.** Pooled $\beta \approx -0.17$ at 24 months on 9 pairs:
+  about 20 % of the gap closes in two years. This matches the PPP literature, and PPP beats the
+  naive anchor.
+- **Not supported: a reliable trading signal.** No hit rate is distinguishable from 50 %. The best
+  figure (62 %, $p = 0.07$) fell to 54 % once four new G10 pairs were added, where it had no edge.
+  More pairs do not add independent time: a dollar move hits every pair at once, so there are only
+  about 49 independent two-year periods.
+- **Not supported: the productivity adjustment.** Its edge on the first five pairs did not hold
+  before 2000, with fixed effects, or on the G10.
+- **Disclosure.** Everything tried is reported: five fair values, three horizons (6, 12, 24 months),
+  two panel specifications, two sub-periods (1976–2000, 2001–2026) and two sets of pairs. With that
+  many comparisons, $p = 0.07$ is weak evidence.
 
----
+**What the bot does with this.** PPP is used as a **two-year valuation anchor**, not a timing tool.
+Returns exclude carry and transaction costs: this is a test of predictive content, not of
+profitability.
 
-## 9. Engineering
+### 5.5 Does a more flexible model help? (Random Forest, XGBoost)
 
-### Running a transformer on a 1 GB VM
+Same question, with machine learning: predict the sign of the 12-month (and 3-month) return of the
+9 G10 pairs from six real-time variables (PPP gap, productivity-adjusted PPP gap, carry, 3- and
+12-month momentum, volatility). Walk-forward from 1991 to 2025, re-trained every year on past
+data only, with a purge so that no training return overlaps the test year; hyperparameters fixed
+in advance (`scripts/backtest_ml.py`).
 
-The production server has 908 MB of RAM and also hosts another service. PyTorch plus DeBERTa needs
-about 1.5 GB, so it does not fit.
+| Model, 12 months | Hit rate, training | Hit rate, out of sample | p (35 independent obs.) |
+|---|---|---|---|
+| Logistic regression | 55 % | 51 % | 0.31 |
+| Random Forest | 65 % | 51 % | 1.00 |
+| XGBoost | 74 % | 51 % | 1.00 |
 
-- The model is exported once to **ONNX** and served with **ONNX Runtime**, so PyTorch is not
-  installed on the server.
-- **Int8 quantisation was tested and rejected.** Dynamic int8 quantisation cut accuracy from 82 %
-  to 22 % (58 % at best with per-channel quantisation), because DeBERTa-v3
-  has extreme activation outliers. The weights are kept in **float32**, in an external data file
-  that the OS **memory-maps** rather than copies, with weight pre-packing and the CPU memory arena
-  disabled.
-- **Result**: identical probabilities to PyTorch (checked by a test), a peak RSS of **687 MB**,
-  and a full update in about 3 minutes on 2 vCPUs, plus a 1 GB swap file as a safety margin.
-
-### Deployment
-
-- **Python environment**: Python 3.13 and dependencies installed with `uv`; the app runs under a
-  dedicated system user.
-- **systemd units**: one long-running service for the dashboard, and a timer for the batch job
-  (07:00 and 19:00 Paris time, with catch-up if the machine was down).
-- **Access**: the dashboard binds to localhost only and is reached through an SSH tunnel, since
-  Streamlit has no built-in authentication.
-- **Machine-specific settings**: a `config.local.yaml` deep-merged over `config.yaml` switches the
-  sentiment engine to ONNX on the server.
-- **Fault tolerance**: if a data source fails, the job falls back to its cached copy for up to
-  30 days and reports it as stale (in `maj.json` and on the dashboard); beyond that it fails
-  loudly, since silently serving month-old data is worse than an error.
-
-### Testing
-
-**96 pytest tests**, mostly on synthetic data with known answers. For example:
-
-- PPP fair value doubles when relative prices double;
-- the CIP forward satisfies no-arbitrage;
-- the BEER recovers the true coefficients of a simulated cointegrated system and flags an
-  independent random-walk pair as non-cointegrated;
-- the AR(1) half-life is recovered;
-- quarterly data never appear before their publication date;
-- every branch of the signal rule is exercised, including the BEER cointegration filter;
-- the real-time backtest is unaffected by data posted after each date (no look-ahead);
-- macro regimes: the four sign rules (including zero changes), two-month persistence, the
-  neutral zone (whose expanding-window σ ignores future data), carried-forward months that never
-  invent an inflation rate nor confirm a change, and no look-ahead;
-- a failing source falls back to its cache only up to a maximum age, and is reported;
-- ONNX and PyTorch outputs match.
-
-### Tech stack
-
-| Area | Tools |
-|---|---|
-| Data | pandas, NumPy, PyArrow (parquet cache), requests, yfinance |
-| Econometrics | statsmodels (OLS with HAC errors, Engle-Granger) |
-| NLP | Hugging Face Transformers, PyTorch (development), ONNX / ONNX Runtime, `tokenizers` (production) |
-| Scraping | BeautifulSoup, pypdf |
-| Dashboard | Streamlit, Altair |
-| Ops | uv, systemd, rsync over SSH, AWS EC2 |
-| Tests | pytest |
-
-### Repository structure
-
-```
-fxmacro/
-├── donnees/        # data: FRED, BIS, OECD, ECB, Yahoo; cache; point-in-time alignment
-├── fair_value/     # ppa.py (PPP), parite_taux.py (CIP/UIP), beer.py, ecarts.py (z-scores)
-├── sentiment/      # scraping, zero-shot NLI (PyTorch & ONNX), FinBERT, aggregation, evaluation
-├── signaux/        # valuation + sentiment combination, live re-evaluation, backtest
-├── regime/         # macro regimes: indicators, classification with persistence
-└── pipeline.py     # data → fair values → deviations for one pair
-app/                # Streamlit dashboard
-scripts/            # batch update, ONNX export, demo scripts
-tests/              # pytest suite
-deploiement/        # systemd units and deployment guide
-config.yaml         # pairs, data sources, model and signal parameters
-```
-
-*Identifiers and comments are in French.*
+Nothing changes: no model beats a coin flip, and the more flexible the model, the more it overfits.
+XGBoost's probabilities are even significantly worse than the logistic regression's
+(Diebold-Mariano $t = -2.7$), and all three do slightly worse than always predicting 50 %. Same
+result at 3 months and in both sub-periods.
 
 ---
 
-## 10. Quickstart
+## 6. Central bank sentiment overlay
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-nlp.txt   # full install incl. PyTorch
-.venv/bin/python scripts/exporter_onnx.py        # one-off: export the NLI model to ONNX
-.venv/bin/python scripts/mettre_a_jour.py        # download data, fit models, score statements
-.venv/bin/python scripts/backtest_temps_reel.py  # real-time vs full-sample backtest
-.venv/bin/python scripts/verifier_regimes.py     # macro regimes on known episodes
-.venv/bin/streamlit run app/tableau_de_bord.py   # dashboard on http://localhost:8501
-.venv/bin/python -m pytest -q                    # run the test suite
-```
+**Method.** Statements from the Fed, ECB, BoE, BoJ, SNB and RBA are split into sentences, and each
+sentence is classified by `MoritzLaurer/deberta-v3-base-zeroshot-v2.0`, a model trained only for
+natural language inference. It scores whether the sentence entails "This is hawkish.", "This is
+dovish." or "This is neutral." and has never been trained on those words. A statement's score
+averages $P(\text{hawkish}) - P(\text{dovish})$ across sentences, weighted by how much policy
+signal each carries.
 
-A FRED API key in `.env` (`FRED_API_KEY=...`) is optional: without one, the public FRED CSV
-endpoint is used.
+**Accuracy on 45 hand-labelled sentences:**
+
+| Model | Accuracy | F1 hawkish | F1 dovish |
+|---|---|---|---|
+| **DeBERTa-v3 zero-shot (NLI)** | **0.82** | 0.80 | 0.85 |
+| FinBERT | 0.62 | 0.37 | 0.65 |
+
+FinBERT measures **tone**, not **policy stance**: "Inflation remains well above target and further
+tightening may be required" sounds negative, so FinBERT calls it dovish. Caveat: the hypothesis
+wording was chosen on these same sentences, so 82 % is optimistic.
+
+**Use in the signal.** If the undervalued currency's central bank is more hawkish than the other by
+at least 0.15, the signal is **strong**; more dovish by 0.15, **weak**; otherwise **moderate**.
+
+**Backtest on 282 archived statements (Fed, ECB, BoE, 2015–2026; `scripts/backtest_sentiment.py`,
+`scripts/etude_evenement_sentiment.py`).**
+
+| Test | DeBERTa | FinBERT |
+|---|---|---|
+| Tone anticipates the policy rate over 6 months (rank correlation) | ECB +0.55, BoE +0.50 (p ≈ 0.01), Fed +0.30 | ≈ 0 |
+| Sentiment alone predicts EURUSD / GBPUSD at 1 or 3 months | no (36–55 % hit rate) | no |
+| Currency moves with the change in tone on the statement day | no ($\rho = -0.01$) | no |
+| Sentiment improves the valuation signal | no evidence | no evidence |
+
+DeBERTa understands central banks: when it reads a statement as hawkish, rates do rise afterwards.
+But the market already knows: the currency does not react to the tone, even on the day. What
+moves FX is the surprise relative to market expectations, not the wording of a public statement.
 
 ---
 
-## 11. Limitations and next steps
+## 7. Current snapshot
+
+*23 October 2026. Model output, not investment advice.*
+
+| Pair | Spot | Gap to PPP | $z^{PPP}$ | $z^{BEER}$ (cointegrated?) | Signal |
+|---|---|---|---|---|---|
+| EURUSD | 1.120 | −13.0 % | −0.90 | +0.94 (no) | neutral |
+| USDJPY | 156.81 | +85.8 % | **+2.31** | +1.57 (no) | **USDJPY ↓, weak** |
+| GBPUSD | 1.338 | −13.4 % | −1.08 | +1.38 (yes, p = 0.06) | neutral |
+| USDCHF | 0.824 | −2.4 % | −0.14 | −0.50 (no) | neutral |
+| AUDUSD | 0.704 | −4.2 % | −0.27 | −1.01 (no) | neutral |
+
+The yen is far below PPP, but the signal is weak because the Fed scores more hawkish than the BoJ.
+This is also the model's main failure: the yen has looked cheap since 2013 and kept falling, because
+the rate differential pays investors to hold dollars (carry).
+
+---
+
+## 8. Limitations and next steps
 
 | Limitation | Next step |
 |---|---|
-| ~~PPP and BEER are calibrated on the full sample, so historical fair values contain look-ahead~~ | **Done**: expanding-window backtest (section 8). It shows no statistically significant edge in real time; next: longer history, more pairs, carry-adjusted returns |
-| **USDJPY value trap**: the yen has screened as cheap on PPP since 2013 but kept depreciating, because a large rate differential pays investors to hold dollars against yen (carry), so mean reversion did not come | Carry filter: use `carry_base` (≈ $i^{XXX} - i^{YYY}$) to suppress or downgrade a valuation signal that runs against a large carry, e.g. no "USDJPY ↓" while carry_base exceeds a threshold; test it in the real-time backtest |
-| BEER cointegration not established (it is now excluded from the signal when p > 0.10); current-account sign issues | Net foreign assets instead of current account, dynamic OLS (DOLS), panel estimation across currencies |
-| Policy rates proxy one-year rates | Two-year government yields to capture expected policy paths |
-| Sentence-level NLI misses context (e.g. "financial conditions have been accommodative" is the BoJ's argument *for* hiking) | Give more weight to the decision sentence; combine with actual policy-rate changes |
-| 82 % accuracy is in-sample | Larger, independently labelled held-out set |
-| Statement URLs are added manually after each meeting | Automatic discovery via central bank RSS feeds |
-| Macro regimes use fixed sign rules and revised data | Estimate regimes with a Markov-switching model (Hamilton, 1989) using filtered, not smoothed, probabilities |
-| Regimes are descriptive only | Test whether FX valuation and carry returns differ across regimes |
+| Sentiment is measured against the previous statement, not against market expectations | Measure the surprise with same-day moves in 2-year yields |
+| **USDJPY value trap**: cheap on PPP since 2013, kept depreciating because of carry | Carry filter: downgrade a valuation signal that runs against a large rate differential; test it in the backtest |
+| Returns exclude carry and costs | Carry-adjusted returns |
+| BEER not cointegrated; current account has the wrong sign for 3 pairs | Net foreign assets instead of current account, dynamic OLS, panel estimation |
+| Sentiment accuracy is in-sample | Larger, independently labelled held-out set |
+
+---
+
+## 9. Running it
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-nlp.txt                    # incl. PyTorch
+.venv/bin/python scripts/exporter_onnx.py                         # one-off: NLI model to ONNX
+.venv/bin/python scripts/mettre_a_jour.py                         # data, models, sentiment
+.venv/bin/python scripts/banc_essai_fair_value.py --long          # section 5.2
+.venv/bin/python scripts/backtest_historique_long.py --horizon 24 # section 5.3
+.venv/bin/python scripts/backtest_temps_reel.py                   # section 5.1
+.venv/bin/python scripts/backtest_ml.py                           # section 5.5 (needs: brew install libomp)
+.venv/bin/python scripts/backtest_sentiment.py --collecter        # section 6 (archives + scoring)
+.venv/bin/python scripts/etude_evenement_sentiment.py             # section 6, event study
+.venv/bin/streamlit run app/tableau_de_bord.py                    # dashboard, localhost:8501
+.venv/bin/python -m pytest -q                                     # 126 tests
+```
+
+A FRED API key in `.env` (`FRED_API_KEY=...`) is optional.
+
+**Engineering notes.**
+
+- **126 pytest tests**, mostly on synthetic data with a known answer. For example, the BEER recovers
+  simulated coefficients, and no real-time estimate or walk-forward prediction changes when future
+  data are altered.
+- **A transformer on a 1 GB VM.** DeBERTa runs through ONNX Runtime with memory-mapped float32
+  weights (peak 687 MB, same output as PyTorch). Int8 quantisation was rejected because accuracy
+  fell from 82 % to 22 %.
+- **Deployment**: systemd timer twice a day, Streamlit behind an SSH tunnel, and a cache fallback
+  that flags stale sources.
+- Stack: pandas, statsmodels, Hugging Face Transformers, ONNX Runtime, Streamlit, AWS EC2.
+  Details in [docs/details.md](docs/details.md#8-engineering).
+
+```
+fxmacro/
+├── donnees/      # data sources, cache, point-in-time alignment, 1971+ history
+├── fair_value/   # PPP, BEER, productivity PPP, z-scores, test bench
+├── signaux/      # signal rule, real-time backtest
+├── sentiment/    # scraping, zero-shot NLI (PyTorch & ONNX), FinBERT, evaluation
+├── regime/       # macro regimes (descriptive, dashboard only: see docs/details.md)
+└── pipeline.py
+app/  scripts/  tests/  deploiement/  config.yaml
+```
+
+*Identifiers and comments are in French.*
 
 ---
 
@@ -589,13 +372,12 @@ endpoint is used.
 
 - Clark, P. B. and MacDonald, R. (1998). *Exchange Rates and Economic Fundamentals: A
   Methodological Comparison of BEERs and FEERs.* IMF Working Paper 98/67.
-- Engle, R. F. and Granger, C. W. J. (1987). Co-integration and error correction:
-  representation, estimation, and testing. *Econometrica*, 55(2).
-- Fama, E. F. (1984). Forward and spot exchange rates. *Journal of Monetary Economics*, 14(3).
+- Driscoll, J. C. and Kraay, A. C. (1998). Consistent covariance matrix estimation with spatially
+  dependent panel data. *Review of Economics and Statistics*, 80(4).
+- Engle, R. F. and Granger, C. W. J. (1987). Co-integration and error correction: representation,
+  estimation, and testing. *Econometrica*, 55(2).
 - Granger, C. W. J. and Newbold, P. (1974). Spurious regressions in econometrics. *Journal of
   Econometrics*, 2(2).
-- Hamilton, J. D. (1989). A new approach to the economic analysis of nonstationary time series
-  and the business cycle. *Econometrica*, 57(2).
 - Newey, W. K. and West, K. D. (1987). A simple, positive semi-definite, heteroskedasticity and
   autocorrelation consistent covariance matrix. *Econometrica*, 55(3).
 - Rogoff, K. (1996). The purchasing power parity puzzle. *Journal of Economic Literature*, 34(2).
@@ -603,7 +385,7 @@ endpoint is used.
   classifiers with natural language inference. arXiv:2312.17543.
 - Araci, D. (2019). FinBERT: Financial sentiment analysis with pre-trained language models.
   arXiv:1908.10063.
-- FrenchQuant, idea from his ytb channel: https://www.youtube.com/watch?v=fvqKANpRF4E
+- Project idea: FrenchQuant, https://www.youtube.com/watch?v=fvqKANpRF4E
 
 ---
 

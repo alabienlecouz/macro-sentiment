@@ -20,8 +20,13 @@ from fxmacro.donnees.spots_direct import derniers_cours
 from fxmacro.signaux.etat import evaluer_signal
 
 # Palette catégorielle validée (ordre fixe) et pôles divergents dovish / hawkish
-COULEURS_SERIES = {"Spot": "#2a78d6", "Fair value PPA": "#eb6834", "Fair value BEER": "#1baf7a"}
-COULEURS_Z = {"z PPA": "#eb6834", "z BEER": "#1baf7a"}
+# Une couleur fixe par modèle (palette catégorielle validée, ordre des slots conservé)
+COULEURS_SERIES = {"Spot": "#2a78d6", "Fair value PPA": "#eb6834", "Fair value BEER": "#1baf7a",
+                   "Fair value PPA productivité": "#eda100"}
+COULEURS_Z = {"z PPA": "#eb6834", "z BEER": "#1baf7a", "z PPA productivité": "#eda100"}
+NOMS_FV = {"spot": "Spot", "fv_ppa": "Fair value PPA", "fv_beer": "Fair value BEER",
+           "fv_ppa_productivite": "Fair value PPA productivité"}
+NOMS_Z = {"z_ppa_ancre": "z PPA", "z_beer_ancre": "z BEER", "z_ppa_productivite_ancre": "z PPA productivité"}
 DOVISH, HAWKISH = "#2a78d6", "#e34948"
 SYMBOLES = {"hausse": "▲", "baisse": "▼", "neutre": "■"}
 # Quatre couleurs fixes pour les régimes (palette catégorielle validée ; info-bulle et
@@ -94,8 +99,8 @@ def libelle_signal(orientation: str, force: str, paire: str) -> str:
 
 def graphique_fair_values(historique: pd.DataFrame, annees: int) -> alt.Chart:
     debut = historique.index.max() - pd.DateOffset(years=annees)
-    donnees = (historique.loc[debut:, ["spot", "fv_ppa", "fv_beer"]]
-               .rename(columns={"spot": "Spot", "fv_ppa": "Fair value PPA", "fv_beer": "Fair value BEER"})
+    colonnes = [c for c in NOMS_FV if c in historique]
+    donnees = (historique.loc[debut:, colonnes].rename(columns=NOMS_FV)
                .reset_index(names="date").melt("date", var_name="série", value_name="cours").dropna())
     survol = alt.selection_point(fields=["date"], nearest=True, on="pointerover", empty=False)
     couleur = alt.Color("série:N", scale=alt.Scale(domain=list(COULEURS_SERIES), range=list(COULEURS_SERIES.values())),
@@ -114,8 +119,8 @@ def graphique_fair_values(historique: pd.DataFrame, annees: int) -> alt.Chart:
 
 def graphique_z(historique: pd.DataFrame, annees: int, seuil: float) -> alt.Chart:
     debut = historique.index.max() - pd.DateOffset(years=annees)
-    donnees = (historique.loc[debut:, ["z_ppa_ancre", "z_beer_ancre"]]
-               .rename(columns={"z_ppa_ancre": "z PPA", "z_beer_ancre": "z BEER"})
+    colonnes = [c for c in NOMS_Z if c in historique]
+    donnees = (historique.loc[debut:, colonnes].rename(columns=NOMS_Z)
                .reset_index(names="date").melt("date", var_name="modèle", value_name="z").dropna())
     couleur = alt.Color("modèle:N", scale=alt.Scale(domain=list(COULEURS_Z), range=list(COULEURS_Z.values())),
                         legend=alt.Legend(orient="top", title=None))
@@ -213,14 +218,19 @@ def section_signaux() -> None:
             if s["orientation"] != "neutre":
                 st.caption(s["explication"])
 
-    tableau = signaux[["paire", "spot", "ecart_ppa_%", "ecart_beer_%", "z_ppa", "z_beer", "p_coint_beer",
-                       "z_valorisation", "delta_sentiment"]]
+    colonnes = ["paire", "spot", "ecart_ppa_%", "ecart_beer_%", "z_ppa", "z_beer", "p_coint_beer",
+                "z_valorisation", "delta_sentiment", "ecart_ppa_productivite_%", "z_ppa_productivite"]
+    tableau = signaux[[c for c in colonnes if c in signaux]]
     st.dataframe(tableau, hide_index=True, use_container_width=True, column_config={
         "spot": st.column_config.NumberColumn("Spot", format="%.4f"),
         "ecart_ppa_%": st.column_config.NumberColumn("Écart PPA", format="%+.1f %%"),
         "ecart_beer_%": st.column_config.NumberColumn("Écart BEER", format="%+.1f %%"),
         "z_ppa": st.column_config.NumberColumn("z PPA", format="%+.2f"),
         "z_beer": st.column_config.NumberColumn("z BEER", format="%+.2f"),
+        "ecart_ppa_productivite_%": st.column_config.NumberColumn(
+            "Écart PPA prod.", format="%+.1f %%", help="PPA ajustée de la productivité : affichée, hors du signal"),
+        "z_ppa_productivite": st.column_config.NumberColumn(
+            "z PPA prod.", format="%+.2f", help="PPA ajustée de la productivité : affichée, hors du signal"),
         "p_coint_beer": st.column_config.NumberColumn(
             "p coint. BEER", format="%.2f",
             help=f"p-value d'Engle-Granger ; au-delà de {params_signal['p_max_cointegration']}, "
@@ -245,7 +255,7 @@ annees = duree_col.select_slider("Historique (années)", options=[3, 5, 10, 20],
 historique = lire_historique(paire, version_maj())
 st.altair_chart(graphique_fair_values(historique, annees), use_container_width=True)
 st.altair_chart(graphique_z(historique, annees, params_signal["seuil_z"]), use_container_width=True)
-st.caption("Fair values et z-scores mensuels (spot en moyenne mensuelle). Pointillés : seuils du signal.")
+st.caption("Fair values et z-scores mensuels (spot en moyenne mensuelle). Pointillés : seuils du signal. PPA calibrée sur 1971-aujourd’hui : repère à environ 2 ans, pas un outil de timing. La PPA ajustée de la productivité est affichée à titre indicatif, hors du signal.")
 
 st.divider()
 st.subheader("Ton des banques centrales")

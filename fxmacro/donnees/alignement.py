@@ -74,3 +74,16 @@ def raccorder(recente: pd.Series, ancienne: pd.Series) -> pd.Series:
     ajustement = (recente.loc[recouvrement] - ancienne.loc[recouvrement]).mean()
     avant = ancienne.loc[ancienne.index < recente.index[0]] + ajustement
     return pd.concat([avant, recente]).sort_index()
+
+
+def annuel_vers_mensuel(serie_annuelle: pd.Series, decalage_apres_annee: int) -> pd.Series:
+    """Série annuelle (datée au 1er janvier) -> mensuelle utilisable en temps réel.
+
+    La valeur de l'année Y n'est connue que `decalage_apres_annee` mois après la fin de Y :
+    elle est placée à cette date puis reportée chaque mois jusqu'à la publication suivante
+    (fonction en escalier, jamais d'interpolation, qui utiliserait l'année suivante).
+    """
+    serie = serie_annuelle.dropna().copy()
+    serie.index = serie.index + pd.DateOffset(months=12 + decalage_apres_annee)
+    mois = pd.date_range(serie.index[0], serie.index[-1] + pd.DateOffset(months=11), freq="MS")
+    return serie.reindex(mois).ffill()
